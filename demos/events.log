@@ -1,0 +1,287 @@
+
+===== 2025-11-24 16:21:16 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764030076552,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW65NRD19N6EWYCKEW7GYCD",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "b29b7590893346e5b2cbcbbba1cb05a4",
+  "message": {
+    "type": "text",
+    "id": "589213766281855463",
+    "text": "echo whatsup"
+  }
+}
+===========================
+
+===== 2025-11-24 16:34:39 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764030879786,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW6Y62Y455XTNYWK1MDWMWA",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "cc6f08ec7d91433ea914374b775e3c42",
+  "message": {
+    "type": "text",
+    "id": "589215114163912996",
+    "text": "/yelp what's a good pizza place near me?"
+  }
+}
+===========================
+
+===== 2025-11-24 16:35:01 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764030901016,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW6YTXMB4SD9QQGMFTZE5K9",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "d97070fe68e54f328f7f6d0798f5b539",
+  "message": {
+    "type": "text",
+    "id": "589215149798195817",
+    "text": "/yelp I am in Anaheim California"
+  }
+}
+===========================
+
+===== 2025-11-24 16:38:09 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764031089405,
+  "source": {
+    "type": "group",
+    "groupId": "C4d5ac4d1ce24a2749a72aa05f5b55b94",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW74JT6TH3SVA4TDRYWGRWX",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "a73668dec9584f7bacf9d0b9180c3689",
+  "message": {
+    "type": "text",
+    "id": "589215465663365429",
+    "text": "/yelp can you find me a pizza place in Anaheim California?"
+  }
+}
+===========================
+
+===== 2025-11-24 16:41:35 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764031295244,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW7AW880PD0AE94DA00Q26R",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "10b64c0cf1cb4ba2a7f1548f0c843ceb",
+  "message": {
+    "type": "text",
+    "id": "589215811021832756",
+    "text": "Hi Nathan if you see this you can mute this if you want I'm testing a yelp bot sorry"
+  }
+}
+===========================
+
+===== 2025-11-24 16:44:30 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764031470396,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW7G79SWWN41XW5VV3T9N8F",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "97b12ecf72cf43099fc7bca602001f1a",
+  "message": {
+    "type": "text",
+    "id": "589216105059320255",
+    "text": "nword"
+  }
+}
+===========================
+
+===== 2025-11-24 16:44:35 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764031475958,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW7GCF0F3Q8YM99R96ZX50F",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "af61a60bf62d4e3b9e480540e65f0594",
+  "message": {
+    "type": "text",
+    "id": "589216114303828145",
+    "text": "test test"
+  }
+}
+===========================
+
+===== 2025-11-24 16:44:39 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764031480073,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW7GGAHQ0RNXK9AYKMMVCC2",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "48ddb35bdb884d7594815f545aaee800",
+  "message": {
+    "type": "text",
+    "id": "589216120981684483",
+    "text": "help"
+  }
+}
+===========================
+
+===== 2025-11-24 16:45:18 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764031518388,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW7HP5HCXE3JDQ84Y37WYVJ",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "b05e74c9cfa647fab30d0f3ca1e994e9",
+  "message": {
+    "type": "text",
+    "id": "589216185573966064",
+    "text": "/yelp help Nathan find soaplands or massage parlors in Nagoya Japan"
+  }
+}
+===========================
+
+===== 2025-11-24 16:45:33 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764031533109,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW7J4CXT0VACF0N18YXMHK3",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "be9c1b064718401886f8fba4ee78dafd",
+  "message": {
+    "type": "text",
+    "id": "589216210168840230",
+    "text": "damnit"
+  }
+}
+===========================
+
+===== 2025-11-24 16:45:50 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764031549884,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW7JMXQEPDT3ESSYJ529AXJ",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "d0d71594ee2e47d9b62d9f7c7c8f9b69",
+  "message": {
+    "type": "text",
+    "id": "589216238405157393",
+    "text": "/yelp help Nathan find speakeasy bars in Nagoya Japan"
+  }
+}
+===========================
+
+===== 2025-11-24 16:57:24 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764032243976,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW87TKYWY45MJHJ9AWHAYWV",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "d987fce2a48a4a48a77b940c71c476b1",
+  "message": {
+    "type": "text",
+    "id": "589217402660061816",
+    "text": "/yelp help me find a Chinese restaurant in Anaheim"
+  }
+}
+===========================
+
+===== 2025-11-24 17:04:19 =====
+{
+  "type": "message",
+  "mode": "active",
+  "timestamp": 1764032659190,
+  "source": {
+    "type": "user",
+    "userId": "Ufcbbf51fe123509d77033a921e4072b1"
+  },
+  "webhookEventId": "01KAW8MG3XTDA9YHQJ0X3DMDPP",
+  "deliveryContext": {
+    "isRedelivery": false
+  },
+  "replyToken": "5e2b7aaa4f5c4825b23e0f9afe6e69a8",
+  "message": {
+    "type": "text",
+    "id": "589218099534758008",
+    "text": "/yelp help me find a Chinese restaurant in Anaheim"
+  }
+}
+===========================
