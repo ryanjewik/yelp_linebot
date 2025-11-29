@@ -76,6 +76,9 @@ public class YelpService {
                 }
                 messages.add("Yelp API error " + response.getStatusCodeValue() + ":\n" + text);
                 return messages;
+            } else {
+                System.out.println("Yelp API call successful.");
+                System.out.println(response.getBody());
             }
 
             // Parse JSON

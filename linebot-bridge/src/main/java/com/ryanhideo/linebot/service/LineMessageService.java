@@ -21,7 +21,7 @@ public class LineMessageService {
         System.out.println("Received text message: " + rawText);
         String trimmed = rawText.trim();
         String lower = trimmed.toLowerCase();
-
+        
         // /yelp command
         if (trimmed.startsWith("/yelp")) {
             yelpCall = true;
@@ -31,10 +31,12 @@ public class LineMessageService {
             } else {
                 replies.addAll(yelpService.callYelpChat(prompt));
             }
+            // Insert message into database before returning
+            messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
             // cap at 5 to match LINE behavior
             return replies.size() > 5 ? replies.subList(0, 5) : replies;
         }
-
+    
         // help / ping / echo
         if (lower.equals("/help")) {
             replies.add(
@@ -44,10 +46,19 @@ public class LineMessageService {
                     "- /echo <text>: I'll repeat your text\n" +
                     "- /yelp <query>: ask Yelp AI (e.g. /yelp good vegan sushi in SF)"
             );
+            // Insert message into database before returning
+            messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
+            return replies;
         } else if (lower.equals("/ping")) {
             replies.add("pong 🏓");
+            // Insert message into database before returning
+            messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
+            return replies;
         } else if (lower.startsWith("/echo ")) {
             replies.add(trimmed.substring(6).trim());
+            // Insert message into database before returning
+            messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
+            return replies;
         }
 
         // Insert message into database

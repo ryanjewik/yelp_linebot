@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ryanhideo.linebot.config.LineProperties;
 import com.ryanhideo.linebot.service.LineMessageService;
+import com.ryanhideo.linebot.service.MessageInsertService;
 import com.ryanhideo.linebot.util.FileLogger;
 import com.ryanhideo.linebot.util.SignatureUtil;
 import org.springframework.http.*;
@@ -23,12 +24,14 @@ public class LineCallbackController {
     private final LineMessageService messageService;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
+    private final MessageInsertService messageInsertService;
 
-    public LineCallbackController(LineProperties lineProps, LineMessageService messageService) {
+    public LineCallbackController(LineProperties lineProps, LineMessageService messageService, MessageInsertService messageInsertService) {
         this.lineProps = lineProps;
         this.messageService = messageService;
         this.objectMapper = new ObjectMapper();
         this.restTemplate = new RestTemplate();
+        this.messageInsertService = messageInsertService;
     }
 
     @PostMapping("/callback")
@@ -112,14 +115,14 @@ public class LineCallbackController {
             if (replies.isEmpty()) {
                 return; // no reply for non-command messages
             }
-            sendReply(replyToken, replies);
+            sendReply(replyToken, replies, messageId, conversationId, userId, msgType, replyId);
         } catch (Exception e) {
             System.err.println("Error handling message: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
-    private void sendReply(String replyToken, List<String> messages) {
+    private void sendReply(String replyToken, List<String> messages, String messageId, String conversationId, String userId, String msgType, String replyId) {
         try {
             // Build JSON body for LINE reply
             var root = objectMapper.createObjectNode();
@@ -127,12 +130,13 @@ public class LineCallbackController {
 
             var msgArray = objectMapper.createArrayNode();
             int count = 0;
-            for (String m : messages) {
+            for (String m : messages) { // here we will update postgres and clean up the message formats
                 if (count >= 5) break;  // LINE limit
                 var msgObj = objectMapper.createObjectNode();
                 msgObj.put("type", "text");
                 msgObj.put("text", m);
                 msgArray.add(msgObj);
+
                 count++;
             }
             root.set("messages", msgArray);
@@ -151,7 +155,19 @@ public class LineCallbackController {
                 System.out.println("LINE reply error: " +
                         response.getStatusCodeValue() + " " +
                         response.getBody());
+            } else {
+                System.out.println("Replied to LINE message successfully.");
             }
+            var responseJson = objectMapper.readTree(response.getBody()).path("sentMessages");
+            int index = 0;
+            for (JsonNode item: responseJson) {
+                System.out.println("Reply item: " + item.toString());
+                String replyMessageId = item.path("id").asText("");
+                // Insert each reply message into the database
+                messageInsertService.insertMessage(msgArray.get(index).path("text").asText(""), false, replyMessageId, conversationId, "-1", msgType, replyId);
+                index++;
+            }
+
         } catch (Exception e) {
             e.printStackTrace();
         }

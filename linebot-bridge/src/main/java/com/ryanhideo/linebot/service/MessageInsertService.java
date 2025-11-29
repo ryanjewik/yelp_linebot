@@ -51,6 +51,11 @@ public class MessageInsertService {
             return true;
         }
     }
+
+    public boolean insertYelpMessage(String messageContent, String messageId, 
+                                  String conversationId, String userId, String msgType, String replyId) throws Exception {
+        return insertMessage(messageContent, true, messageId, conversationId, userId, msgType, replyId);
+    }
     
     private boolean userExists(Connection conn, String userId) throws Exception {
         String sql = "SELECT 1 FROM users WHERE userId = ?";
