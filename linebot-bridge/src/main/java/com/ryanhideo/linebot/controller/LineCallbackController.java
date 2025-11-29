@@ -75,6 +75,22 @@ public class LineCallbackController {
 
         JsonNode messageNode = eventNode.path("message");
         String msgType = messageNode.path("type").asText("");
+        String messageId = messageNode.path("id").asText("");
+        String chattype = eventNode.path("source").path("type").asText(""); // used to indicate if it's a dm or a gc
+        String userId = eventNode.path("source").path("userId").asText("");
+        
+        String conversationId;
+        if (chattype.equals("group") || chattype.equals("room")) {
+            conversationId = eventNode.path("source").path("groupId").asText("");
+            if (conversationId.isEmpty()) {
+                conversationId = eventNode.path("source").path("roomId").asText("");
+            }
+        } else {
+            conversationId = eventNode.path("source").path("userId").asText("");
+        }
+        
+        String replyId = messageNode.path("quotedMessageId").asText("");
+
         if (msgType.equals("image")) {
             System.out.println("image received");
             return;
@@ -91,12 +107,16 @@ public class LineCallbackController {
             return;
         }
 
-        List<String> replies = messageService.handleTextMessage(text);
-        if (replies.isEmpty()) {
-            return; // no reply for non-command messages (same as your Python else: return)
+        try {
+            List<String> replies = messageService.handleTextMessage(text, messageId, conversationId, userId, msgType, replyId);
+            if (replies.isEmpty()) {
+                return; // no reply for non-command messages
+            }
+            sendReply(replyToken, replies);
+        } catch (Exception e) {
+            System.err.println("Error handling message: " + e.getMessage());
+            e.printStackTrace();
         }
-
-        sendReply(replyToken, replies);
     }
 
     private void sendReply(String replyToken, List<String> messages) {

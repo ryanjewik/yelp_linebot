@@ -1,2 +1,0 @@
-curl -v -X GET https://api-data.line.me/v2/bot/message/589526055250296988/content \
--H 'Authorization: Bearer lYc86nc11z8sM1Vn91Vi3R3xTkSY1f5Yx2TjZRjIgWwhfkNWaUyoBVt2hQIz/SD7TYqRqEQaGKFWaHGYn+8GCXCE998/YGUVDrIvGo/jJq3xK0lWMf0Uap6lZcqEXDsTadnuPktM+hv8TR+wsWMoowdB04t89/1O/w1cDnyilFU=' \ --output image.jpg

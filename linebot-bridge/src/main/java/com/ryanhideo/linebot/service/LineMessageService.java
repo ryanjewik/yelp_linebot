@@ -1,7 +1,6 @@
 package com.ryanhideo.linebot.service;
 
 import org.springframework.stereotype.Service;
-
 import java.util.ArrayList;
 import java.util.List;
 
@@ -9,12 +8,15 @@ import java.util.List;
 public class LineMessageService {
 
     private final YelpService yelpService;
+    private final MessageInsertService messageInsertService;
+    Boolean yelpCall = false;
 
-    public LineMessageService(YelpService yelpService) {
+    public LineMessageService(YelpService yelpService, MessageInsertService messageInsertService) {
         this.yelpService = yelpService;
+        this.messageInsertService = messageInsertService;
     }
 
-    public List<String> handleTextMessage(String rawText) {
+    public List<String> handleTextMessage(String rawText, String messageId, String conversationId, String userId, String msgType, String replyId) throws Exception {
         List<String> replies = new ArrayList<>();
         System.out.println("Received text message: " + rawText);
         String trimmed = rawText.trim();
@@ -22,6 +24,7 @@ public class LineMessageService {
 
         // /yelp command
         if (trimmed.startsWith("/yelp")) {
+            yelpCall = true;
             String prompt = trimmed.substring("/yelp".length()).trim();
             if (prompt.isEmpty()) {
                 replies.add("Usage: /yelp <your question>\nExample: /yelp Best ramen near me");
@@ -46,6 +49,9 @@ public class LineMessageService {
         } else if (lower.startsWith("/echo ")) {
             replies.add(trimmed.substring(6).trim());
         }
+
+        // Insert message into database
+        messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
 
         return replies;
     }
