@@ -16,7 +16,7 @@ public class LineMessageService {
 
     public List<String> handleTextMessage(String rawText) {
         List<String> replies = new ArrayList<>();
-
+        System.out.println("Received text message: " + rawText);
         String trimmed = rawText.trim();
         String lower = trimmed.toLowerCase();
 

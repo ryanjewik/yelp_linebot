@@ -54,7 +54,7 @@ public class LineCallbackController {
         try {
             JsonNode root = objectMapper.readTree(body);
             JsonNode events = root.path("events");
-
+            System.out.println("Received events: " + events.toString());
             if (events.isArray()) {
                 for (JsonNode eventNode : events) {
                     handleSingleEvent(eventNode);
@@ -75,7 +75,12 @@ public class LineCallbackController {
 
         JsonNode messageNode = eventNode.path("message");
         String msgType = messageNode.path("type").asText("");
-        if (!"text".equals(msgType)) {
+        if (msgType.equals("image")) {
+            System.out.println("image received");
+            return;
+        }
+        
+        if (!msgType.equals("text")) {
             return;
         }
 

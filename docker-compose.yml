@@ -1,0 +1,100 @@
+
+services:
+  linebot-bridge:
+    build:
+      context: ./linebot-bridge
+      dockerfile: Dockerfile
+    container_name: linebot-bridge
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
+      - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
+      - YELP_API_KEY=${YELP_API_KEY}
+      - YELP_CLIENT_ID=${YELP_CLIENT_ID}
+      - SERVER_PORT=8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      linebot-db:
+        condition: service_healthy
+    networks:
+      - linebot-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  linebot-db:
+    image: postgres:18
+    container_name: linebot-db
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - linebot-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - linebot-network
+  linebot-db-restore:
+    image: ${LINEBOT_RESTORE_IMAGE:-postgres:18}   # Debian-based; has bash & coreutils
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - DB_USERNAME=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=${POSTGRES_DB}
+      - LINEBOT_DB_HOST=linebot-db
+      - LINEBOT_DB_PORT=5432
+    depends_on:
+      linebot-db:
+        condition: service_healthy
+    volumes:
+      - ./db_init:/db_init:ro
+    entrypoint:
+      - /bin/sh
+      - -lc
+      - |
+          set -eu
+          echo "== /db_init contents =="
+          ls -la /db_init || true
+
+          # Ensure script exists
+          if [ ! -f /db_init/restore_linebot_db.sh ]; then
+            echo "FATAL: /db_init/restore_linebot_db.sh not found. Check your volume path."
+            exit 1
+          fi
+
+          # Strip UTF-8 BOM if present into a temp file
+          if [ "$(head -c3 /db_init/restore_linebot_db.sh | od -An -t x1 | tr -d ' \n')" = "efbbbf" ]; then
+            tail -c +4 /db_init/restore_linebot_db.sh > /tmp/restore.tmp
+          else
+            cp /db_init/restore_linebot_db.sh /tmp/restore.tmp
+          fi
+
+          # Convert CRLF -> LF and make it executable
+          tr -d '\r' < /tmp/restore.tmp > /tmp/restore.sh
+          chmod +x /tmp/restore.sh
+
+          # Run under bash
+          exec bash /tmp/restore.sh
+    networks:
+      - linebot-network
+
+volumes:
+  linebot-data: {}
+networks:
+  linebot-network:
+    driver: bridge
