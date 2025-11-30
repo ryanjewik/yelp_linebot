@@ -82,14 +82,14 @@ public class LineCallbackController {
         String chattype = eventNode.path("source").path("type").asText(""); // used to indicate if it's a dm or a gc
         String userId = eventNode.path("source").path("userId").asText("");
         
-        String conversationId;
+        String lineConversationId;
         if (chattype.equals("group") || chattype.equals("room")) {
-            conversationId = eventNode.path("source").path("groupId").asText("");
-            if (conversationId.isEmpty()) {
-                conversationId = eventNode.path("source").path("roomId").asText("");
+            lineConversationId = eventNode.path("source").path("groupId").asText("");
+            if (lineConversationId.isEmpty()) {
+                lineConversationId = eventNode.path("source").path("roomId").asText("");
             }
         } else {
-            conversationId = eventNode.path("source").path("userId").asText("");
+            lineConversationId = eventNode.path("source").path("userId").asText("");
         }
         
         String replyId = messageNode.path("quotedMessageId").asText("");
@@ -111,18 +111,18 @@ public class LineCallbackController {
         }
 
         try {
-            List<String> replies = messageService.handleTextMessage(text, messageId, conversationId, userId, msgType, replyId);
-            if (replies.isEmpty()) {
+            LineMessageService.MessageResult result = messageService.handleTextMessage(text, messageId, lineConversationId, userId, msgType, replyId);
+            if (result.getReplies().isEmpty()) {
                 return; // no reply for non-command messages
             }
-            sendReply(replyToken, replies, messageId, conversationId, userId, msgType, replyId);
+            sendReply(replyToken, result.getReplies(), messageId, lineConversationId, userId, msgType, replyId, result.getYelpConversationId());
         } catch (Exception e) {
             System.err.println("Error handling message: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
-    private void sendReply(String replyToken, List<String> messages, String messageId, String conversationId, String userId, String msgType, String replyId) {
+    private void sendReply(String replyToken, List<String> messages, String messageId, String lineConversationId, String userId, String msgType, String replyId, String yelpConversationId) {
         try {
             // Build JSON body for LINE reply
             var root = objectMapper.createObjectNode();
@@ -164,7 +164,7 @@ public class LineCallbackController {
                 System.out.println("Reply item: " + item.toString());
                 String replyMessageId = item.path("id").asText("");
                 // Insert each reply message into the database
-                messageInsertService.insertMessage(msgArray.get(index).path("text").asText(""), false, replyMessageId, conversationId, "-1", msgType, replyId);
+                messageInsertService.insertMessage(msgArray.get(index).path("text").asText(""), false, replyMessageId, lineConversationId, "-1", msgType, replyId, yelpConversationId);
                 index++;
             }
 

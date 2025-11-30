@@ -17,7 +17,7 @@ public class MessageInsertService {
     }
 
     public boolean insertMessage(String messageContent, Boolean yelpCall, String messageId, 
-                                  String conversationId, String userId, String msgType, String replyId) throws Exception {
+                                  String lineConversationId, String userId, String msgType, String replyId, String yelpConversationId) throws Exception {
         String host = props.getHost();
         int port = props.getPort();
         String dbName = props.getDbName();
@@ -35,26 +35,26 @@ public class MessageInsertService {
             }
             
             // 2. Check if conversation exists, if not insert
-            if (!conversationExists(conn, conversationId)) {
-                insertConversation(conn, conversationId, now);
+            if (!conversationExists(conn, lineConversationId)) {
+                insertConversation(conn, lineConversationId, now);
             }
             
             // 3. Check if user-conversation pair exists in chat_members, if not insert
-            if (!chatMemberExists(conn, conversationId, userId)) {
-                insertChatMember(conn, conversationId, userId);
+            if (!chatMemberExists(conn, lineConversationId, userId)) {
+                insertChatMember(conn, lineConversationId, userId);
             }
             
             // 4. Finally, insert the message
-            insertMessageRecord(conn, messageId, msgType, conversationId, userId, 
-                              messageContent, now, yelpCall, replyId);
+            insertMessageRecord(conn, messageId, msgType, lineConversationId, userId, 
+                              messageContent, now, yelpCall, replyId, yelpConversationId);
             
             return true;
         }
     }
 
     public boolean insertYelpMessage(String messageContent, String messageId, 
-                                  String conversationId, String userId, String msgType, String replyId) throws Exception {
-        return insertMessage(messageContent, true, messageId, conversationId, userId, msgType, replyId);
+                                  String lineConversationId, String userId, String msgType, String replyId, String yelpConversationId) throws Exception {
+        return insertMessage(messageContent, true, messageId, lineConversationId, userId, msgType, replyId, yelpConversationId);
     }
     
     private boolean userExists(Connection conn, String userId) throws Exception {
@@ -75,29 +75,29 @@ public class MessageInsertService {
         }
     }
     
-    private boolean conversationExists(Connection conn, String conversationId) throws Exception {
-        String sql = "SELECT 1 FROM conversations WHERE conversationId = ?";
+    private boolean conversationExists(Connection conn, String lineConversationId) throws Exception {
+        String sql = "SELECT 1 FROM conversations WHERE lineConversationId = ?";
         try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, conversationId);
+            pstmt.setString(1, lineConversationId);
             try (ResultSet rs = pstmt.executeQuery()) {
                 return rs.next();
             }
         }
     }
     
-    private void insertConversation(Connection conn, String conversationId, Timestamp now) throws Exception {
-        String sql = "INSERT INTO conversations (conversationId, conversationCreated) VALUES (?, ?)";
+    private void insertConversation(Connection conn, String lineConversationId, Timestamp now) throws Exception {
+        String sql = "INSERT INTO conversations (lineConversationId, conversationCreated) VALUES (?, ?)";
         try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, conversationId);
+            pstmt.setString(1, lineConversationId);
             pstmt.setTimestamp(2, now);
             pstmt.executeUpdate();
         }
     }
     
-    private boolean chatMemberExists(Connection conn, String conversationId, String userId) throws Exception {
-        String sql = "SELECT 1 FROM chat_members WHERE conversationId = ? AND userId = ?";
+    private boolean chatMemberExists(Connection conn, String lineConversationId, String userId) throws Exception {
+        String sql = "SELECT 1 FROM chat_members WHERE lineConversationId = ? AND userId = ?";
         try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, conversationId);
+            pstmt.setString(1, lineConversationId);
             pstmt.setString(2, userId);
             try (ResultSet rs = pstmt.executeQuery()) {
                 return rs.next();
@@ -105,38 +105,54 @@ public class MessageInsertService {
         }
     }
     
-    private void insertChatMember(Connection conn, String conversationId, String userId) throws Exception {
-        String sql = "INSERT INTO chat_members (conversationId, userId) VALUES (?, ?)";
+    private void insertChatMember(Connection conn, String lineConversationId, String userId) throws Exception {
+        String sql = "INSERT INTO chat_members (lineConversationId, userId) VALUES (?, ?)";
         try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setString(1, conversationId);
+            pstmt.setString(1, lineConversationId);
             pstmt.setString(2, userId);
             pstmt.executeUpdate();
         }
     }
     
     private void insertMessageRecord(Connection conn, String messageId, String messageType, 
-                                     String conversationId, String userId, String messageContent,
-                                     Timestamp messageDate, Boolean yelpCall, String replyId) throws Exception {
+                                     String lineConversationId, String userId, String messageContent,
+                                     Timestamp messageDate, Boolean yelpCall, String replyId, String yelpConversationId) throws Exception {
         String sql;
-        if (replyId == null || replyId.isEmpty()) {
-            sql = "INSERT INTO messages (messageId, messageType, conversationId, userId, " +
+        boolean hasReply = replyId != null && !replyId.isEmpty();
+        boolean hasYelpConv = yelpConversationId != null && !yelpConversationId.isEmpty();
+        
+        // Build SQL based on which optional fields are present
+        if (!hasReply && !hasYelpConv) {
+            sql = "INSERT INTO messages (messageId, messageType, lineConversationId, userId, " +
                   "messageContent, messageDate, yelpCall) VALUES (?, ?, ?, ?, ?, ?, ?)";
-        } else {
-            sql = "INSERT INTO messages (messageId, messageType, conversationId, userId, " +
+        } else if (hasReply && !hasYelpConv) {
+            sql = "INSERT INTO messages (messageId, messageType, lineConversationId, userId, " +
                   "messageContent, messageDate, yelpCall, repliedMessageId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        } else if (!hasReply && hasYelpConv) {
+            sql = "INSERT INTO messages (messageId, messageType, lineConversationId, userId, " +
+                  "messageContent, messageDate, yelpCall, yelpConversationId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        } else {
+            sql = "INSERT INTO messages (messageId, messageType, lineConversationId, userId, " +
+                  "messageContent, messageDate, yelpCall, repliedMessageId, yelpConversationId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
         }
         
         try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setString(1, messageId);
             pstmt.setString(2, messageType);
-            pstmt.setString(3, conversationId);
+            pstmt.setString(3, lineConversationId);
             pstmt.setString(4, userId);
             pstmt.setString(5, messageContent);
             pstmt.setTimestamp(6, messageDate);
             pstmt.setBoolean(7, yelpCall);
-            if (replyId != null && !replyId.isEmpty()) {
-                pstmt.setString(8, replyId);
+            
+            int paramIndex = 8;
+            if (hasReply) {
+                pstmt.setString(paramIndex++, replyId);
             }
+            if (hasYelpConv) {
+                pstmt.setString(paramIndex, yelpConversationId);
+            }
+            
             pstmt.executeUpdate();
         }
     }

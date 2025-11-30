@@ -6,21 +6,40 @@ import java.util.List;
 
 @Service
 public class LineMessageService {
+    
+    public static class MessageResult {
+        private final List<String> replies;
+        private final String yelpConversationId;
+        
+        public MessageResult(List<String> replies, String yelpConversationId) {
+            this.replies = replies;
+            this.yelpConversationId = yelpConversationId;
+        }
+        
+        public List<String> getReplies() {
+            return replies;
+        }
+        
+        public String getYelpConversationId() {
+            return yelpConversationId;
+        }
+    }
 
     private final YelpService yelpService;
     private final MessageInsertService messageInsertService;
-    Boolean yelpCall = false;
 
     public LineMessageService(YelpService yelpService, MessageInsertService messageInsertService) {
         this.yelpService = yelpService;
         this.messageInsertService = messageInsertService;
     }
 
-    public List<String> handleTextMessage(String rawText, String messageId, String conversationId, String userId, String msgType, String replyId) throws Exception {
+    public MessageResult handleTextMessage(String rawText, String messageId, String lineConversationI, String userId, String msgType, String replyId) throws Exception {
         List<String> replies = new ArrayList<>();
         System.out.println("Received text message: " + rawText);
         String trimmed = rawText.trim();
         String lower = trimmed.toLowerCase();
+        String yelpConversationId = null;
+        boolean yelpCall = false;
         
         // /yelp command
         if (trimmed.startsWith("/yelp")) {
@@ -29,12 +48,15 @@ public class LineMessageService {
             if (prompt.isEmpty()) {
                 replies.add("Usage: /yelp <your question>\nExample: /yelp Best ramen near me");
             } else {
-                replies.addAll(yelpService.callYelpChat(prompt));
+                YelpService.YelpChatResult result = yelpService.callYelpChat(prompt, lineConversationI);
+                replies.addAll(result.getMessages());
+                yelpConversationId = result.getChatId();
             }
             // Insert message into database before returning
-            messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
+            messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
             // cap at 5 to match LINE behavior
-            return replies.size() > 5 ? replies.subList(0, 5) : replies;
+            List<String> cappedReplies = replies.size() > 5 ? replies.subList(0, 5) : replies;
+            return new MessageResult(cappedReplies, yelpConversationId);
         }
     
         // help / ping / echo
@@ -47,23 +69,23 @@ public class LineMessageService {
                     "- /yelp <query>: ask Yelp AI (e.g. /yelp good vegan sushi in SF)"
             );
             // Insert message into database before returning
-            messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
-            return replies;
+            messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
+            return new MessageResult(replies, yelpConversationId);
         } else if (lower.equals("/ping")) {
             replies.add("pong 🏓");
             // Insert message into database before returning
-            messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
-            return replies;
+            messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
+            return new MessageResult(replies, yelpConversationId);
         } else if (lower.startsWith("/echo ")) {
             replies.add(trimmed.substring(6).trim());
             // Insert message into database before returning
-            messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
-            return replies;
+            messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
+            return new MessageResult(replies, yelpConversationId);
         }
 
         // Insert message into database
-        messageInsertService.insertMessage(rawText, yelpCall, messageId, conversationId, userId, msgType, replyId);
+        messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
 
-        return replies;
+        return new MessageResult(replies, yelpConversationId);
     }
 }
