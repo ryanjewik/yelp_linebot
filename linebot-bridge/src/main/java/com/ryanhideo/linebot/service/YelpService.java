@@ -54,8 +54,14 @@ public class YelpService {
                 System.out.println("Starting new Yelp session");
             }
             
-            // Call OpenAI with yelp_agent tool, passing the yelpConversationId
-            OpenAIService.YelpResult result = openAIService.callOpenAIWithYelpTool(query, existingYelpConvId);
+            // Get chat history if we have an existing session
+            String chatHistory = "";
+            if (existingYelpConvId != null && !existingYelpConvId.isEmpty()) {
+                chatHistory = getChatHistory(existingYelpConvId);
+            }
+            
+            // Call OpenAI with yelp_agent tool, passing the yelpConversationId and chat history
+            OpenAIService.YelpResult result = openAIService.callOpenAIWithYelpTool(query, existingYelpConvId, chatHistory);
             messages = result.getMessages();
             List<List<String>> photos = result.getPhotos();
             yelpConversationId = result.getYelpConversationId();
@@ -149,6 +155,55 @@ public class YelpService {
             System.err.println("Error updating Yelp session: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+    
+    private String getChatHistory(String yelpConversationId) {
+        StringBuilder history = new StringBuilder();
+        try (Connection conn = getConnection()) {
+            // Only get user messages and assistant header responses (skip detailed business cards)
+            String sql = "SELECT messageid, messagetype, messagecontent, messagedate FROM messages " +
+                        "WHERE yelpconversationid = ? " +
+                        "ORDER BY messagedate DESC LIMIT 15";  // Reduced to last 15 messages
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setString(1, yelpConversationId);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    List<String> messages = new ArrayList<>();
+                    while (rs.next()) {
+                        String messageId = rs.getString("messageid");
+                        String content = rs.getString("messagecontent");
+                        
+                        // User messages have numeric messageIds
+                        boolean isUser = !messageId.startsWith("push-");
+                        
+                        if (isUser) {
+                            // Include all user messages
+                            messages.add("User: " + content);
+                        } else {
+                            // For assistant messages, only include if it's a summary (doesn't start with emoji)
+                            // Skip individual business card messages (they start with 📍)
+                            if (!content.startsWith("📍") && !content.startsWith("🔍")) {
+                                // Truncate long assistant responses to first 200 chars
+                                String truncated = content.length() > 200 ? content.substring(0, 200) + "..." : content;
+                                messages.add("Assistant: " + truncated);
+                            }
+                        }
+                    }
+                    
+                    // Reverse to get chronological order (oldest first)
+                    for (int i = messages.size() - 1; i >= 0; i--) {
+                        history.append(messages.get(i)).append("\n");
+                    }
+                    
+                    if (history.length() > 0) {
+                        System.out.println("Retrieved chat history with " + messages.size() + " relevant messages");
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error retrieving chat history: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return history.toString().trim();
     }
     
     public static class YelpChatResult {

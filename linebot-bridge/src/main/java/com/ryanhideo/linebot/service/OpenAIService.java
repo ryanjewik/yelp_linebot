@@ -32,15 +32,20 @@ public class OpenAIService {
         this.restTemplate = new RestTemplate();
     }
     
-    public YelpResult callOpenAIWithYelpTool(String userQuery, String yelpConversationId) {
+    public YelpResult callOpenAIWithYelpTool(String userQuery, String yelpConversationId, String chatHistory) {
         List<String> messages = new ArrayList<>();
         List<List<String>> photosList = new ArrayList<>();
         String newYelpConversationId = yelpConversationId;
         
         try {
+            // Prepend chat history to the query for context
+            String enhancedQuery = userQuery;
+            if (chatHistory != null && !chatHistory.isEmpty()) {
+                enhancedQuery = "Previous conversation:\n" + chatHistory + "\n\nCurrent query: " + userQuery;
+            }
+            
             // BYPASS OpenAI interpretation - call yelp_agent directly with user's exact query
-            System.out.println("Calling yelp_agent directly with exact query: " + userQuery);
-            MCPResult mcpResult = callYelpMCP(userQuery, null, null, yelpConversationId);
+            MCPResult mcpResult = callYelpMCP(enhancedQuery, null, null, yelpConversationId);
             
             if (mcpResult.getYelpConversationId() != null) {
                 newYelpConversationId = mcpResult.getYelpConversationId();
