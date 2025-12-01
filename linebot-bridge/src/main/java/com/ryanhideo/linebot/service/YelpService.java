@@ -28,153 +28,53 @@ public class YelpService {
 
     private final YelpProperties props;
     private final PostgresProperties postgresProps;
+    private final OpenAIService openAIService;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
 
-    public YelpService(YelpProperties props, PostgresProperties postgresProps) {
+    public YelpService(YelpProperties props, PostgresProperties postgresProps, OpenAIService openAIService) {
         this.props = props;
         this.postgresProps = postgresProps;
+        this.openAIService = openAIService;
         this.restTemplate = new RestTemplate();
         this.objectMapper = new ObjectMapper();
     }
 
     public YelpChatResult callYelpChat(String query, String lineConversationId) {
         List<String> messages = new ArrayList<>();
-        String chatId = null;
-
-        if (props.getApiKey() == null || props.getApiKey().isEmpty()) {
-            messages.add("Yelp API key is not configured.\n\n" +
-                    "Please set YELP_API_KEY in your environment.");
-            return new YelpChatResult(messages, chatId);
-        }
+        String yelpConversationId = null;
 
         try {
-            // Check for existing Yelp session
-            String existingChatId = getValidYelpSession(lineConversationId);
+            // Check for existing Yelp conversation ID
+            String existingYelpConvId = getValidYelpSession(lineConversationId);
             
-            // Build request body
-            ObjectMapper mapper = objectMapper;
-            JsonNode root = mapper.createObjectNode();
-            ((com.fasterxml.jackson.databind.node.ObjectNode) root).put("query", query);
-            
-            // Add chat_id if we have a valid existing session
-            if (existingChatId != null && !existingChatId.isEmpty()) {
-                ((com.fasterxml.jackson.databind.node.ObjectNode) root).put("chat_id", existingChatId);
-                System.out.println("Continuing Yelp session with chat_id: " + existingChatId);
+            if (existingYelpConvId != null && !existingYelpConvId.isEmpty()) {
+                System.out.println("Continuing Yelp session with ID: " + existingYelpConvId);
             } else {
                 System.out.println("Starting new Yelp session");
             }
-
-            com.fasterxml.jackson.databind.node.ObjectNode userContext =
-                    mapper.createObjectNode();
-            if (props.getLocale() != null && !props.getLocale().isEmpty()) {
-                userContext.put("locale", props.getLocale());
-            }
-            if (props.getLatitude() != null && props.getLongitude() != null) {
-                userContext.put("latitude", props.getLatitude());
-                userContext.put("longitude", props.getLongitude());
-            }
-            if (userContext.size() > 0) {
-                ((com.fasterxml.jackson.databind.node.ObjectNode) root)
-                        .set("user_context", userContext);
-            }
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-            headers.setBearerAuth(props.getApiKey());
-
-            HttpEntity<String> entity =
-                    new HttpEntity<>(mapper.writeValueAsString(root), headers);
-
-            ResponseEntity<String> response =
-                    restTemplate.exchange(YELP_URL, HttpMethod.POST, entity, String.class);
-
-            if (!response.getStatusCode().is2xxSuccessful()) {
-                String text = response.getBody() != null ? response.getBody() : "";
-                if (text.length() > 2000) {
-                    text = text.substring(0, 2000) + "\n...(truncated)...";
-                }
-                messages.add("Yelp API error " + response.getStatusCodeValue() + ":\n" + text);
-                return new YelpChatResult(messages, chatId);
-            } else {
-                System.out.println("Yelp API call successful.");
-                System.out.println(response.getBody());
-            }
-
-            // Parse JSON
-            String body = response.getBody();
-            if (body == null) {
-                messages.add("Yelp API returned empty body.");
-                return new YelpChatResult(messages, chatId);
-            }
-
-            JsonNode data = mapper.readTree(body);
             
-            // Extract chat_id from response
-            chatId = data.path("chat_id").asText(null);
-            if (chatId != null && !chatId.isEmpty()) {
-                System.out.println("Received chat_id from Yelp: " + chatId);
-                // Update conversation table with new chat_id and timestamp
-                updateYelpSession(lineConversationId, chatId);
+            // Call OpenAI with yelp_agent tool, passing the yelpConversationId
+            OpenAIService.YelpResult result = openAIService.callOpenAIWithYelpTool(query, existingYelpConvId);
+            messages = result.getMessages();
+            List<List<String>> photos = result.getPhotos();
+            yelpConversationId = result.getYelpConversationId();
+            
+            // Update conversation table with new/updated yelpConversationId
+            if (yelpConversationId != null && !yelpConversationId.isEmpty()) {
+                System.out.println("Received yelpConversationId: " + yelpConversationId);
+                updateYelpSession(lineConversationId, yelpConversationId);
             }
-
-            // Log full JSON to yelp.log
-            String pretty = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(data);
-            FileLogger.appendToFile(YELP_LOG_FILE, pretty);
-
-            // Base natural-language text
-            JsonNode respNode = data.path("response").path("text");
-            String baseText = respNode.isMissingNode() || respNode.isNull()
-                    ? "Yelp returned a response."
-                    : respNode.asText();
-
-            messages.add(baseText +
-                    "\n\n(Full raw Yelp JSON logged to yelp.log. Showing first business details below.)");
-
-            // Extract first business
-            JsonNode entities = data.path("entities");
-            JsonNode firstBusiness = null;
-
-            if (entities.isArray()) {
-                for (JsonNode entityNode : entities) {
-                    JsonNode businesses = entityNode.path("businesses");
-                    if (businesses.isArray() && businesses.size() > 0) {
-                        firstBusiness = businesses.get(0);
-                        break;
-                    }
-                }
-            }
-
-            if (firstBusiness != null) {
-                String bizJson = mapper.writerWithDefaultPrettyPrinter()
-                        .writeValueAsString(firstBusiness);
-                List<String> chunks = chunkText(bizJson, 3500);
-
-                if (!chunks.isEmpty()) {
-                    chunks.set(0, "First business (full JSON):\n\n" + chunks.get(0));
-                }
-
-                // 1 (baseText) + up to 4 chunks
-                for (int i = 0; i < chunks.size() && i < 4; i++) {
-                    messages.add(chunks.get(i));
-                }
-            } else {
-                // fallback: truncated JSON
-                String shortPretty = pretty;
-                if (shortPretty.length() > 3500) {
-                    shortPretty = shortPretty.substring(0, 3500) +
-                            "\n\n...(truncated JSON preview)...";
-                }
-                messages.add("No businesses found in entities.\n\n" + shortPretty);
-            }
+            
+            return new YelpChatResult(messages, photos, yelpConversationId);
 
         } catch (Exception e) {
-            messages.add("Error calling Yelp API: " + e.getMessage());
+            messages.add("Error calling OpenAI with Yelp tool: " + e.getMessage());
             e.printStackTrace();
+            List<List<String>> emptyPhotos = new ArrayList<>();
+            emptyPhotos.add(new ArrayList<>());
+            return new YelpChatResult(messages, emptyPhotos, yelpConversationId);
         }
-
-        return new YelpChatResult(messages, chatId);
     }
 
     private List<String> chunkText(String text, int maxLen) {
@@ -253,15 +153,21 @@ public class YelpService {
     
     public static class YelpChatResult {
         private final List<String> messages;
+        private final List<List<String>> photos;
         private final String chatId;
         
-        public YelpChatResult(List<String> messages, String chatId) {
+        public YelpChatResult(List<String> messages, List<List<String>> photos, String chatId) {
             this.messages = messages;
+            this.photos = photos;
             this.chatId = chatId;
         }
         
         public List<String> getMessages() {
             return messages;
+        }
+        
+        public List<List<String>> getPhotos() {
+            return photos;
         }
         
         public String getChatId() {

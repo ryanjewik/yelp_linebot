@@ -9,15 +9,21 @@ public class LineMessageService {
     
     public static class MessageResult {
         private final List<String> replies;
+        private final List<List<String>> photos;
         private final String yelpConversationId;
         
-        public MessageResult(List<String> replies, String yelpConversationId) {
+        public MessageResult(List<String> replies, List<List<String>> photos, String yelpConversationId) {
             this.replies = replies;
+            this.photos = photos;
             this.yelpConversationId = yelpConversationId;
         }
         
         public List<String> getReplies() {
             return replies;
+        }
+        
+        public List<List<String>> getPhotos() {
+            return photos;
         }
         
         public String getYelpConversationId() {
@@ -47,19 +53,23 @@ public class LineMessageService {
             String prompt = trimmed.substring("/yelp".length()).trim();
             if (prompt.isEmpty()) {
                 replies.add("Usage: /yelp <your question>\nExample: /yelp Best ramen near me");
+                List<List<String>> emptyPhotos = new ArrayList<>();
+                emptyPhotos.add(new ArrayList<>());
+                messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
+                return new MessageResult(replies, emptyPhotos, yelpConversationId);
             } else {
                 YelpService.YelpChatResult result = yelpService.callYelpChat(prompt, lineConversationI);
                 replies.addAll(result.getMessages());
                 yelpConversationId = result.getChatId();
+                messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
+                return new MessageResult(result.getMessages(), result.getPhotos(), yelpConversationId);
             }
-            // Insert message into database before returning
-            messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
-            // cap at 5 to match LINE behavior
-            List<String> cappedReplies = replies.size() > 5 ? replies.subList(0, 5) : replies;
-            return new MessageResult(cappedReplies, yelpConversationId);
         }
     
         // help / ping / echo
+        List<List<String>> emptyPhotos = new ArrayList<>();
+        emptyPhotos.add(new ArrayList<>());
+        
         if (lower.equals("/help")) {
             replies.add(
                     "Commands:\n" +
@@ -70,22 +80,22 @@ public class LineMessageService {
             );
             // Insert message into database before returning
             messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
-            return new MessageResult(replies, yelpConversationId);
+            return new MessageResult(replies, emptyPhotos, yelpConversationId);
         } else if (lower.equals("/ping")) {
             replies.add("pong 🏓");
             // Insert message into database before returning
             messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
-            return new MessageResult(replies, yelpConversationId);
+            return new MessageResult(replies, emptyPhotos, yelpConversationId);
         } else if (lower.startsWith("/echo ")) {
             replies.add(trimmed.substring(6).trim());
             // Insert message into database before returning
             messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
-            return new MessageResult(replies, yelpConversationId);
+            return new MessageResult(replies, emptyPhotos, yelpConversationId);
         }
 
         // Insert message into database
         messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
 
-        return new MessageResult(replies, yelpConversationId);
+        return new MessageResult(replies, emptyPhotos, yelpConversationId);
     }
 }

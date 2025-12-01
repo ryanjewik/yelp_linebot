@@ -44,7 +44,12 @@ public class MessageInsertService {
                 insertChatMember(conn, lineConversationId, userId);
             }
             
-            // 4. Finally, insert the message
+            // 4. Get valid yelpConversationId if not already provided
+            if (yelpConversationId == null || yelpConversationId.isEmpty()) {
+                yelpConversationId = getValidYelpConversationId(conn, lineConversationId);
+            }
+            
+            // 5. Finally, insert the message
             insertMessageRecord(conn, messageId, msgType, lineConversationId, userId, 
                               messageContent, now, yelpCall, replyId, yelpConversationId);
             
@@ -155,5 +160,34 @@ public class MessageInsertService {
             
             pstmt.executeUpdate();
         }
+    }
+    
+    private String getValidYelpConversationId(Connection conn, String lineConversationId) throws Exception {
+        String sql = "SELECT yelpconversationid, lastyelpmessageprompt FROM conversations WHERE lineconversationid = ?";
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, lineConversationId);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) {
+                    String yelpConvId = rs.getString("yelpconversationid");
+                    Timestamp lastPrompt = rs.getTimestamp("lastyelpmessageprompt");
+                    
+                    // Check if we have a yelpConversationId and it's within 6 hours
+                    if (yelpConvId != null && !yelpConvId.isEmpty() && lastPrompt != null) {
+                        long timeDiff = System.currentTimeMillis() - lastPrompt.getTime();
+                        long sixHoursMillis = 6 * 60 * 60 * 1000;
+                        if (timeDiff < sixHoursMillis) {
+                            System.out.println("Using valid Yelp conversation ID: " + yelpConvId + " (" + (timeDiff / 1000 / 60) + " minutes old)");
+                            return yelpConvId;
+                        } else {
+                            System.out.println("Yelp conversation ID expired (" + (timeDiff / 1000 / 60 / 60) + " hours old)");
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error getting valid Yelp conversation ID: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return null;
     }
 }

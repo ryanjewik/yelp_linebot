@@ -1,5 +1,27 @@
 
 services:
+  yelp-mcp:
+    build:
+      context: ./mcps/yelp-mcp
+      dockerfile: Dockerfile.rest
+    container_name: yelp-mcp
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - YELP_API_KEY=${YELP_API_KEY}
+      - PORT=8080
+    ports:
+      - "8080:8080"
+    networks:
+      - linebot-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import http.client; conn = http.client.HTTPConnection('localhost', 8080); conn.request('GET', '/health'); conn.getresponse()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   linebot-bridge:
     build:
       context: ./linebot-bridge
@@ -13,6 +35,10 @@ services:
       - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
       - YELP_API_KEY=${YELP_API_KEY}
       - YELP_CLIENT_ID=${YELP_CLIENT_ID}
+      - YELP_LOCALE=${YELP_LOCALE:-en_US}
+      - YELP_LATITUDE=${YELP_LATITUDE:-37.7749}
+      - YELP_LONGITUDE=${YELP_LONGITUDE:--122.4194}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - SERVER_PORT=8000
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -26,6 +52,8 @@ services:
       - ./linebot-bridge/application.log:/app/application.log
     depends_on:
       linebot-db:
+        condition: service_healthy
+      yelp-mcp:
         condition: service_healthy
     networks:
       - linebot-network
