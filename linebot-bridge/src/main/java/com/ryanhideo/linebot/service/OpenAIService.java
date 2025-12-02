@@ -10,6 +10,7 @@ import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -19,40 +20,81 @@ public class OpenAIService {
     
     private final OpenAIProperties openAIProperties;
     private final YelpProperties yelpProperties;
+    private final YelpApiService yelpApiService;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
     private static final String OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
-    private static final String MCP_SERVER_URL = "http://yelp-mcp:8080";
+    
+    // TODO: Update these URLs once Node/TypeScript MCP servers are implemented
+    private static final String DB_MCP_URL = "http://db-mcp:8080";
+    private static final String CHAT_HISTORY_MCP_URL = "http://chat-history-mcp:8080";
+    
     private static final int MAX_ITERATIONS = 5;
     
-    public OpenAIService(OpenAIProperties openAIProperties, YelpProperties yelpProperties) {
+    public OpenAIService(OpenAIProperties openAIProperties, YelpProperties yelpProperties, YelpApiService yelpApiService) {
         this.openAIProperties = openAIProperties;
         this.yelpProperties = yelpProperties;
+        this.yelpApiService = yelpApiService;
         this.objectMapper = new ObjectMapper();
         this.restTemplate = new RestTemplate();
     }
     
-    public YelpResult callOpenAIWithYelpTool(String userQuery, String yelpConversationId, String chatHistory) {
+    /**
+     * HYBRID APPROACH: Main entry point for Yelp queries.
+     * 
+     * Flow:
+     * 1. Gather recent chat history (existing flow)
+     * 2. Call OpenAI with DB MCP tools to gather context (user prefs, specific history search)
+     * 3. Build enhanced query combining all context
+     * 4. Direct call to Yelp Fusion AI API via Java service
+     * 
+     * @param userQuery The user's original query
+     * @param yelpConversationId The Yelp conversation ID for context
+     * @param chatHistory Recent chat history (from existing flow)
+     * @param lineConversationId The LINE conversation ID for getting all members' preferences
+     * @return YelpResult with messages, photos, and updated conversation ID
+     */
+    public YelpResult callOpenAIWithYelpTool(String userQuery, String yelpConversationId, String chatHistory, String lineConversationId) {
         List<String> messages = new ArrayList<>();
         List<List<String>> photosList = new ArrayList<>();
         String newYelpConversationId = yelpConversationId;
         
         try {
-            // Prepend chat history to the query for context
-            String enhancedQuery = userQuery;
-            if (chatHistory != null && !chatHistory.isEmpty()) {
-                enhancedQuery = "Previous conversation:\n" + chatHistory + "\n\nCurrent query: " + userQuery;
+            // Step 1: Gather context from DB MCPs using OpenAI (user preferences, specific history)
+            ContextResult context = gatherContextWithOpenAI(userQuery, lineConversationId, yelpConversationId);
+            
+            // Step 2: Check if this is a recall query with history results
+            if (context.hasHistorySearch() && context.getHistorySearchResult() != null) {
+                // For recall queries, extract and return the found restaurants directly
+                String recallResponse = formatRecallResponse(context.getHistorySearchResult(), userQuery);
+                if (recallResponse != null) {
+                    System.out.println("Answering recall query from chat history (no Yelp call needed)");
+                    messages.add(recallResponse);
+                    photosList.add(new ArrayList<>()); // No photos for recall responses
+                    return new YelpResult(messages, photosList, yelpConversationId);
+                }
             }
             
-            // BYPASS OpenAI interpretation - call yelp_agent directly with user's exact query
-            MCPResult mcpResult = callYelpMCP(enhancedQuery, null, null, yelpConversationId);
+            // Step 3: Build enhanced query with all context for new search
+            String enhancedQuery = buildEnhancedQuery(userQuery, context, chatHistory);
             
-            if (mcpResult.getYelpConversationId() != null) {
-                newYelpConversationId = mcpResult.getYelpConversationId();
+            System.out.println("Enhanced query for Yelp API:\n" + enhancedQuery);
+            
+            // Step 4: Direct call to Yelp Fusion AI API via Java service
+            // Let Yelp ask for location naturally in conversation
+            YelpApiService.YelpChatResult yelpResult = yelpApiService.queryYelpAI(
+                enhancedQuery,
+                yelpConversationId,
+                null,  // Let Yelp extract location from query or ask user
+                null   // Let Yelp extract location from query or ask user
+            );
+            
+            if (yelpResult.getChatId() != null) {
+                newYelpConversationId = yelpResult.getChatId();
             }
             
-            // Clean up and split the formatted response into separate messages with photos
-            ResponseWithPhotos response = cleanupAndSplitYelpResponse(mcpResult.getFormattedResponse());
+            // Step 5: Clean up and split the formatted response into separate messages with photos
+            ResponseWithPhotos response = cleanupAndSplitYelpResponse(yelpResult.getFormattedResponse());
             messages.addAll(response.messages);
             photosList.addAll(response.photos);
             
@@ -64,6 +106,14 @@ public class OpenAIService {
         return new YelpResult(messages, photosList, newYelpConversationId);
     }
     
+    /**
+     * BACKWARD COMPATIBILITY: Overload without userId parameter.
+     * Uses empty context gathering (no preferences loaded).
+     */
+    public YelpResult callOpenAIWithYelpTool(String userQuery, String yelpConversationId, String chatHistory) {
+        return callOpenAIWithYelpTool(userQuery, yelpConversationId, chatHistory, null);
+    }
+    
     private ResponseWithPhotos cleanupAndSplitYelpResponse(String rawResponse) {
         List<String> messages = new ArrayList<>();
         List<List<String>> photosList = new ArrayList<>();
@@ -72,12 +122,20 @@ public class OpenAIService {
         String header = "";
         int firstBusinessIndex = rawResponse.indexOf("## Business");
         if (firstBusinessIndex > 0) {
+            // Businesses found - extract intro before them
             header = rawResponse.substring(0, firstBusinessIndex).trim();
+        } else if (firstBusinessIndex == -1) {
+            // No businesses - use entire response as intro
+            header = rawResponse;
+        }
+        
+        if (!header.isEmpty()) {
             // Clean up header - remove ALL technical sections
             header = header.replaceAll("(?s)^#.*?## Introduction\\s*", "");
             // Remove Chat ID section more aggressively
             header = header.replaceAll("(?m)^##\\s*Chat ID.*", "");
-            header = header.replaceAll("(?m)^K_[A-Za-z0-9_-]+$", "");
+            header = header.replaceAll("(?m)^[KM][A-Za-z0-9_-]+$", "");  // Remove chat IDs (MK75LzAIhwyAeb_8IOwZ7A format)
+            header = header.replaceAll("(?m)[KM][A-Za-z0-9_-]{10,}\\s*$", "");  // Remove chat IDs at end of text
             header = header.replaceAll("\\n{2,}", "\n");
             header = header.trim();
             
@@ -185,64 +243,70 @@ public class OpenAIService {
         return "";
     }
     
-    // OLD METHOD - keeping for reference if needed later
-    public YelpResult callOpenAIWithYelpToolOLD(String userQuery, String yelpConversationId) {
-        List<String> messages = new ArrayList<>();
-        String newYelpConversationId = yelpConversationId;
+    // ============================================================================
+    // HYBRID APPROACH: OpenAI for DB Context Gathering + Direct Yelp MCP Call
+    // ============================================================================
+    
+    /**
+     * Gathers context from database MCPs using OpenAI's tool calling.
+     * Flow: OpenAI decides which tools to call based on user query:
+     * - get_user_preferences: Get dietary restrictions, allergies, price pref, favorite cuisines for all conversation members
+     * - search_chat_history: Semantic search for specific past conversations
+     * 
+     * @param userQuery The user's original query
+     * @param lineConversationId The LINE conversation ID to get all members' preferences
+     * @param yelpConversationId The conversation ID for chat history search
+     * @return ContextResult containing preferences and relevant history
+     */
+    private ContextResult gatherContextWithOpenAI(String userQuery, String lineConversationId, String yelpConversationId) {
+        ContextResult context = new ContextResult();
         
         try {
-            // Define the yelp_agent tool for OpenAI
-            ObjectNode toolDefinition = createYelpAgentToolDefinition();
+            // Build conversation with system message
+            ArrayNode messages = objectMapper.createArrayNode();
             
-            // Build the conversation with system message and user query
-            ArrayNode conversationHistory = objectMapper.createArrayNode();
-            
-            // Add system message
             ObjectNode systemMsg = objectMapper.createObjectNode();
             systemMsg.put("role", "system");
-            systemMsg.put("content", "You are a helpful assistant with access to Yelp business information via the yelp_agent tool. " +
-                          "CRITICAL: You MUST ALWAYS use the yelp_agent tool for ANY query related to businesses, restaurants, " +
-                          "locations, or local services - even for follow-up questions or location clarifications. " +
-                          "The yelp_agent tool maintains conversation context via chat_id, so it can understand follow-up queries " +
-                          "like 'what about in another city' or 'show me more'. NEVER answer business queries without calling the tool. " +
-                          "Always include Yelp URLs when recommending businesses.");
-            conversationHistory.add(systemMsg);
+            systemMsg.put("content", 
+                "You are a context gathering assistant for a restaurant recommendation system. " +
+                "Your job is to gather context to personalize restaurant recommendations. " +
+                "ALWAYS call get_user_preferences for ANY restaurant query to check dietary restrictions, allergies, price preferences, and favorite cuisines. " +
+                "Also call search_chat_history if the user references past conversations. When searching history: " +
+                "- Extract KEY KEYWORDS from the user's query (e.g., 'recommend', 'date', 'San Diego') " +
+                "- Use simple search terms, not full sentences " +
+                "- Focus on nouns and action verbs " +
+                "Examples: 'what did you recommend yesterday?' -> query: 'recommend' | 'that sushi place' -> query: 'sushi' " +
+                "After gathering context, return a brief JSON summary of what you found.");
+            messages.add(systemMsg);
             
-            // Add user message
             ObjectNode userMsg = objectMapper.createObjectNode();
             userMsg.put("role", "user");
             userMsg.put("content", userQuery);
-            conversationHistory.add(userMsg);
+            messages.add(userMsg);
             
-            // Iterative loop to handle tool calls
+            // Create OpenAI request with DB MCP tools
+            ObjectNode request = objectMapper.createObjectNode();
+            request.put("model", openAIProperties.getModel());
+            request.put("temperature", 0.3); // Lower temperature for context gathering
+            request.set("messages", messages);
+            
+            // Add tool definitions for DB MCPs
+            ArrayNode tools = objectMapper.createArrayNode();
+            tools.add(createUserPreferencesTool());
+            tools.add(createChatHistorySearchTool());
+            request.set("tools", tools);
+            request.put("tool_choice", "auto");
+            
+            // Iterative tool calling loop
             int iteration = 0;
-            boolean requiresToolCall = true;
-            String finalResponse = "";
-            
-            while (requiresToolCall && iteration < MAX_ITERATIONS) {
+            while (iteration < MAX_ITERATIONS) {
                 iteration++;
-                System.out.println("OpenAI iteration: " + iteration);
                 
-                // Create OpenAI API request with tool definition
-                ObjectNode openAIRequest = objectMapper.createObjectNode();
-                openAIRequest.put("model", openAIProperties.getModel());
-                openAIRequest.put("temperature", openAIProperties.getTemperature());
-                
-                // Use conversation history directly as messages
-                openAIRequest.set("messages", conversationHistory);
-                
-                // Add tools
-                ArrayNode toolsArray = objectMapper.createArrayNode();
-                toolsArray.add(toolDefinition);
-                openAIRequest.set("tools", toolsArray);
-                openAIRequest.put("tool_choice", "auto");
-                
-                // Call OpenAI API
                 HttpHeaders headers = new HttpHeaders();
                 headers.setContentType(MediaType.APPLICATION_JSON);
                 headers.setBearerAuth(openAIProperties.getApiKey());
                 
-                HttpEntity<String> entity = new HttpEntity<>(openAIRequest.toString(), headers);
+                HttpEntity<String> entity = new HttpEntity<>(request.toString(), headers);
                 ResponseEntity<String> response = restTemplate.exchange(
                     OPENAI_API_URL,
                     HttpMethod.POST,
@@ -251,7 +315,7 @@ public class OpenAIService {
                 );
                 
                 if (!response.getStatusCode().is2xxSuccessful()) {
-                    messages.add("OpenAI API error: " + response.getStatusCodeValue());
+                    System.err.println("OpenAI context gathering error: " + response.getStatusCodeValue());
                     break;
                 }
                 
@@ -259,118 +323,130 @@ public class OpenAIService {
                 JsonNode choice = responseBody.path("choices").get(0);
                 JsonNode message = choice.path("message");
                 
-                // Check if OpenAI wants to call a tool
+                // Check for tool calls
                 JsonNode toolCalls = message.path("tool_calls");
                 if (!toolCalls.isMissingNode() && toolCalls.isArray() && toolCalls.size() > 0) {
-                    // Add assistant's message with tool_calls to history
-                    ObjectNode assistantMsg = objectMapper.createObjectNode();
-                    assistantMsg.put("role", "assistant");
-                    String content = message.path("content").asText("");
-                    if (content != null && !content.isEmpty()) {
-                        assistantMsg.put("content", content);
-                    }
-                    assistantMsg.set("tool_calls", toolCalls);
-                    conversationHistory.add(assistantMsg);
+                    System.out.println("[OpenAI] 🔧 OpenAI requested " + toolCalls.size() + " tool call(s)");
                     
-                    // Execute each tool call
+                    // Add assistant message to history
+                    messages.add(message);
+                    
+                    // Execute tool calls
                     for (JsonNode toolCall : toolCalls) {
                         String toolCallId = toolCall.path("id").asText();
                         String functionName = toolCall.path("function").path("name").asText();
                         String argumentsJson = toolCall.path("function").path("arguments").asText();
+                        JsonNode args = objectMapper.readTree(argumentsJson);
                         
-                        System.out.println("OpenAI requested tool: " + functionName);
-                        System.out.println("Tool arguments: " + argumentsJson);
+                        System.out.println("[OpenAI] 🔧 Tool call: " + functionName + " with args: " + argumentsJson);
                         
-                        if ("yelp_agent".equals(functionName)) {
-                            // Parse arguments
-                            JsonNode args = objectMapper.readTree(argumentsJson);
-                            String query = args.path("natural_language_query").asText();
-                            Double latitude = args.has("search_latitude") ? args.path("search_latitude").asDouble() : null;
-                            Double longitude = args.has("search_longitude") ? args.path("search_longitude").asDouble() : null;
+                        String toolResult = "";
+                        
+                        if ("get_user_preferences".equals(functionName)) {
+                            // Call DB MCP to get all conversation members' preferences
+                            System.out.println("[OpenAI] 📞 Calling get_user_preferences MCP for conversation: " + lineConversationId);
+                            toolResult = callUserPreferencesMCP(lineConversationId);
+                            context.setHasPreferences(true);
+                            context.setPreferencesJson(toolResult);
                             
-                            // Call yelp-mcp service with yelpConversationId
-                            OpenAIService.MCPResult mcpResult = callYelpMCP(query, latitude, longitude, yelpConversationId);
-                            String toolResult = mcpResult.getFormattedResponse();
-                            
-                            // Update yelpConversationId if returned
-                            if (mcpResult.getYelpConversationId() != null) {
-                                newYelpConversationId = mcpResult.getYelpConversationId();
-                                System.out.println("Updated yelpConversationId from MCP: " + newYelpConversationId);
-                            }
-                            
-                            // Add tool result to conversation
-                            ObjectNode toolMsg = objectMapper.createObjectNode();
-                            toolMsg.put("role", "tool");
-                            toolMsg.put("tool_call_id", toolCallId);
-                            toolMsg.put("content", toolResult);
-                            conversationHistory.add(toolMsg);
+                        } else if ("search_chat_history".equals(functionName)) {
+                            // Call Chat History MCP for semantic search
+                            String searchQuery = args.path("query").asText();
+                            // Use LINE conversation ID since messages are stored with lineconversationid
+                            toolResult = callChatHistoryMCP(lineConversationId, searchQuery);
+                            context.setHasHistorySearch(true);
+                            context.setHistorySearchResult(toolResult);
                         }
+                        
+                        // Add tool result to conversation
+                        ObjectNode toolMsg = objectMapper.createObjectNode();
+                        toolMsg.put("role", "tool");
+                        toolMsg.put("tool_call_id", toolCallId);
+                        toolMsg.put("content", toolResult);
+                        messages.add(toolMsg);
                     }
+                    
+                    // Update request with new messages for next iteration
+                    request.set("messages", messages);
+                    
                 } else {
-                    // No more tool calls, get final response
-                    requiresToolCall = false;
-                    finalResponse = message.path("content").asText();
-                    messages.add(finalResponse);
+                    // No more tool calls, get final summary
+                    String finalContent = message.path("content").asText("");
+                    context.setSummary(finalContent);
+                    break;
                 }
             }
             
-            if (iteration >= MAX_ITERATIONS) {
-                messages.add("Maximum iterations reached. Please try again.");
-            }
-            
         } catch (Exception e) {
-            messages.add("Error calling OpenAI with Yelp tool: " + e.getMessage());
+            System.err.println("Error gathering context with OpenAI: " + e.getMessage());
             e.printStackTrace();
         }
         
-        List<List<String>> emptyPhotos = new ArrayList<>();
-        emptyPhotos.add(new ArrayList<>());
-        return new YelpResult(messages, emptyPhotos, newYelpConversationId);
+        return context;
     }
     
-    private ObjectNode createYelpAgentToolDefinition() {
+    /**
+     * Creates tool definition for get_user_preferences MCP.
+     * This will be implemented as a Node/TypeScript MCP server.
+     */
+    private ObjectNode createUserPreferencesTool() {
         ObjectNode tool = objectMapper.createObjectNode();
         tool.put("type", "function");
         
         ObjectNode function = objectMapper.createObjectNode();
-        function.put("name", "yelp_agent");
+        function.put("name", "get_user_preferences");
         function.put("description", 
-            "Intelligent Yelp business agent designed for agent-to-agent communication. " +
-            "Handles any natural language request about local businesses. " +
-            "Returns both natural language responses and structured business data. " +
-            "CRITICAL: When recommending businesses, you MUST ALWAYS include the Yelp " +
-            "URL from the structured data to ensure users can view the business on Yelp directly. " +
-            "The yelp_agent maintains conversation context, so pass the user's EXACT query without modification. " +
-            "Capabilities include: business search, detailed questions, comparisons, itinerary planning, " +
-            "reservation booking exclusively through the Yelp Reservations platform at participating " +
-            "restaurants, and any other business-related analysis or recommendations."
-        );
+            "Retrieves food preferences for ALL members in the conversation, including dietary restrictions (vegan, gluten-free, etc.), " +
+            "allergies, price range preference (1-4), and favorite cuisines. " +
+            "Use this when the user is asking for restaurant recommendations to personalize results for everyone in the group.");
+        
+        ObjectNode parameters = objectMapper.createObjectNode();
+        parameters.put("type", "object");
+        parameters.set("properties", objectMapper.createObjectNode());
+        parameters.set("required", objectMapper.createArrayNode());
+        
+        function.set("parameters", parameters);
+        tool.set("function", function);
+        
+        return tool;
+    }
+    
+    /**
+     * Creates tool definition for search_chat_history MCP.
+     * This will be implemented as a Node/TypeScript MCP server.
+     */
+    private ObjectNode createChatHistorySearchTool() {
+        ObjectNode tool = objectMapper.createObjectNode();
+        tool.put("type", "function");
+        
+        ObjectNode function = objectMapper.createObjectNode();
+        function.put("name", "search_chat_history");
+        function.put("description", 
+            "Searches through past conversation history for specific information. " +
+            "Use this when user references past conversations like: " +
+            "'what did you recommend yesterday?', 'that place you showed me', 'like last time', etc. " +
+            "Returns relevant past messages and recommendations.");
         
         ObjectNode parameters = objectMapper.createObjectNode();
         parameters.put("type", "object");
         
         ObjectNode properties = objectMapper.createObjectNode();
-        
         ObjectNode queryProp = objectMapper.createObjectNode();
         queryProp.put("type", "string");
-        queryProp.put("description", "Pass the user's EXACT query without any modification or interpretation. " +
-                                      "The yelp_agent will handle context and interpretation internally.");
-        properties.set("natural_language_query", queryProp);
-        
-        ObjectNode latProp = objectMapper.createObjectNode();
-        latProp.put("type", "number");
-        latProp.put("description", "Optional latitude coordinate for precise location-based searches");
-        properties.set("search_latitude", latProp);
-        
-        ObjectNode lonProp = objectMapper.createObjectNode();
-        lonProp.put("type", "number");
-        lonProp.put("description", "Optional longitude coordinate for precise location-based searches");
-        properties.set("search_longitude", lonProp);
+        queryProp.put("description", 
+            "Search keywords to find relevant past messages (space-separated). " +
+            "Extract 2-4 KEY KEYWORDS that represent the core concept. " +
+            "Examples: " +
+            "  'what were the sushi places?' → 'sushi places' or 'sushi restaurant'" +
+            "  'date activities yesterday' → 'date activities' or 'activities things'" +
+            "  'that Italian place' → 'italian restaurant'" +
+            "Use nouns and specific terms. Multiple keywords give better recall.");
+        properties.set("query", queryProp);
         
         parameters.set("properties", properties);
         
         ArrayNode required = objectMapper.createArrayNode();
-        required.add("natural_language_query");
+        required.add("query");
         parameters.set("required", required);
         
         function.set("parameters", parameters);
@@ -379,54 +455,376 @@ public class OpenAIService {
         return tool;
     }
     
-    private MCPResult callYelpMCP(String query, Double latitude, Double longitude, String yelpConversationId) {
+    /**
+     * Calls the User Preferences MCP server via stdio (Node.js MCP SDK).
+     * 
+     * The MCP server runs as a subprocess and communicates via JSON-RPC over stdio.
+     * Request: { "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "get_user_preferences", "arguments": { "conversationId": "C123..." } } }
+     * Response: { "found": true, "memberCount": 2, "preferences": { "diet": [...], "allergies": [...], "priceRange": 1, "favoriteCuisines": [...] } }
+     */
+    private String callUserPreferencesMCP(String conversationId) {
+        System.out.println("[MCP] ========================================");
+        System.out.println("[MCP] Calling User Preferences MCP for conversationId: " + conversationId);
+        System.out.println("[MCP] ========================================");
+        
         try {
+            // Start MCP process
+            ProcessBuilder pb = new ProcessBuilder("node", "/app/user-prefs-mcp/index.js");
+            pb.environment().put("DB_HOST", "linebot-db");
+            pb.environment().put("DB_PORT", "5432");
+            pb.environment().put("DB_NAME", System.getenv("POSTGRES_DB"));
+            pb.environment().put("DB_USER", System.getenv("POSTGRES_USER"));
+            pb.environment().put("DB_PASSWORD", System.getenv("POSTGRES_PASSWORD"));
+            
+            System.out.println("[MCP] Starting Node.js MCP process...");
+            Process process = pb.start();
+            
+            // Write JSON-RPC request
             ObjectNode request = objectMapper.createObjectNode();
-            request.put("natural_language_query", query);
+            request.put("jsonrpc", "2.0");
+            request.put("id", 1);
+            request.put("method", "tools/call");
             
-            // Only include coordinates if explicitly provided by OpenAI
-            if (latitude != null && longitude != null) {
-                request.put("search_latitude", latitude);
-                request.put("search_longitude", longitude);
+            ObjectNode params = objectMapper.createObjectNode();
+            params.put("name", "get_user_preferences");
+            
+            ObjectNode args = objectMapper.createObjectNode();
+            args.put("conversationId", conversationId);
+            params.set("arguments", args);
+            
+            request.set("params", params);
+            
+            System.out.println("[MCP] Sending JSON-RPC request: " + request.toString());
+            
+            try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()))) {
+                writer.write(request.toString());
+                writer.newLine();
+                writer.flush();
             }
-            // Otherwise, let yelp-mcp extract location from the natural language query
             
-            // Include yelpConversationId if available for conversation continuity
-            if (yelpConversationId != null && !yelpConversationId.isEmpty()) {
-                request.put("chat_id", yelpConversationId);
+            // Read JSON-RPC response
+            String response;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                response = reader.readLine();
             }
             
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
+            System.out.println("[MCP] Received response: " + response);
             
-            HttpEntity<String> entity = new HttpEntity<>(request.toString(), headers);
+            process.destroy();
             
-            ResponseEntity<String> response = restTemplate.exchange(
-                MCP_SERVER_URL + "/yelp_agent",
-                HttpMethod.POST,
-                entity,
-                String.class
-            );
-            
-            if (response.getStatusCode().is2xxSuccessful()) {
-                // Parse response to extract formatted_response and chat_id
-                JsonNode responseJson = objectMapper.readTree(response.getBody());
-                String formattedResponse = responseJson.path("formatted_response").asText();
-                String chatId = responseJson.has("chat_id") ? responseJson.path("chat_id").asText(null) : null;
-                
-                return new MCPResult(formattedResponse, chatId);
-            } else {
-                String errorJson = "{\"error\": \"MCP server returned error: " + response.getStatusCodeValue() + "\"}";
-                return new MCPResult(errorJson, null);
+            if (response != null) {
+                JsonNode responseNode = objectMapper.readTree(response);
+                JsonNode result = responseNode.path("result");
+                JsonNode content = result.path("content").get(0);
+                String prefsJson = content.path("text").asText();
+                System.out.println("[MCP] User preferences retrieved: " + prefsJson);
+                return prefsJson;
             }
             
         } catch (Exception e) {
-            System.err.println("Error calling yelp-mcp: " + e.getMessage());
+            System.err.println("[MCP] ❌ Error calling user preferences MCP: " + e.getMessage());
             e.printStackTrace();
-            String errorJson = "{\"error\": \"Failed to call yelp-mcp: " + e.getMessage() + "\"}";
-            return new MCPResult(errorJson, null);
+        }
+        
+        // Fallback to empty preferences
+        return "{\"found\": false, \"preferences\": {\"diet\": [], \"allergies\": [], \"priceRange\": null, \"favoriteCuisines\": []}}";
+    }
+    
+    /**
+     * Calls the Chat History MCP server for semantic search via stdio (Node.js MCP SDK).
+     * 
+     * The MCP server runs as a subprocess and communicates via JSON-RPC over stdio.
+     * Request: { "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "search_chat_history", "arguments": { "conversationId": "C123...", "query": "restaurants" } } }
+     * Response: { "found": true, "resultCount": 3, "results": [...] }
+     */
+    private String callChatHistoryMCP(String conversationId, String searchQuery) {
+        System.out.println("[MCP] ========================================");
+        System.out.println("[MCP] Calling Chat History MCP");
+        System.out.println("[MCP] ConversationId: " + conversationId);
+        System.out.println("[MCP] Search Query: " + searchQuery);
+        System.out.println("[MCP] ========================================");
+        
+        try {
+            // Start MCP process
+            ProcessBuilder pb = new ProcessBuilder("node", "/app/chat-history-mcp/index.js");
+            pb.environment().put("DB_HOST", "linebot-db");
+            pb.environment().put("DB_PORT", "5432");
+            pb.environment().put("DB_NAME", System.getenv("POSTGRES_DB"));
+            pb.environment().put("DB_USER", System.getenv("POSTGRES_USER"));
+            pb.environment().put("DB_PASSWORD", System.getenv("POSTGRES_PASSWORD"));
+            
+            System.out.println("[MCP] Starting Node.js MCP process...");
+            Process process = pb.start();
+            
+            // Write JSON-RPC request
+            ObjectNode request = objectMapper.createObjectNode();
+            request.put("jsonrpc", "2.0");
+            request.put("id", 1);
+            request.put("method", "tools/call");
+            
+            ObjectNode params = objectMapper.createObjectNode();
+            params.put("name", "search_chat_history");
+            
+            ObjectNode args = objectMapper.createObjectNode();
+            args.put("conversationId", conversationId);
+            args.put("query", searchQuery);
+            args.put("limit", 5);
+            params.set("arguments", args);
+            
+            request.set("params", params);
+            
+            System.out.println("[MCP] Sending JSON-RPC request: " + request.toString());
+            
+            try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()))) {
+                writer.write(request.toString());
+                writer.newLine();
+                writer.flush();
+            }
+            
+            // Read JSON-RPC response
+            String response;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                response = reader.readLine();
+            }
+            
+            System.out.println("[MCP] Received response: " + response);
+            
+            process.destroy();
+            
+            if (response != null) {
+                JsonNode responseNode = objectMapper.readTree(response);
+                JsonNode result = responseNode.path("result");
+                JsonNode content = result.path("content").get(0);
+                String historyJson = content.path("text").asText();
+                System.out.println("[MCP] Chat history retrieved: " + historyJson);
+                return historyJson;
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[MCP] ❌ Error calling chat history MCP: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        // Fallback to empty results
+        return "{\"found\": false, \"results\": []}";
+    }
+    
+    /**
+     * Builds an enhanced query for Yelp MCP by combining:
+     * 1. Original user query
+     * 2. User preferences from DB MCP (if gathered)
+     * 3. Relevant chat history (if searched)
+     * 4. Recent conversation context (existing flow)
+     * 
+     * @param originalQuery The user's original query
+     * @param context Context gathered from OpenAI + DB MCPs
+     * @param recentHistory Recent chat history from existing flow
+     * @return Enhanced query string for Yelp MCP
+     */
+    private String buildEnhancedQuery(String originalQuery, ContextResult context, String recentHistory) {
+        StringBuilder enhanced = new StringBuilder();
+        
+        // Add user preferences if available
+        if (context.hasPreferences() && context.getPreferencesJson() != null) {
+            try {
+                JsonNode prefs = objectMapper.readTree(context.getPreferencesJson());
+                
+                List<String> prefParts = new ArrayList<>();
+                
+                // Get preferences object
+                JsonNode prefsData = prefs.path("preferences");
+                
+                // Diet restrictions
+                JsonNode diet = prefsData.path("diet");
+                if (diet.isArray() && diet.size() > 0) {
+                    List<String> dietList = new ArrayList<>();
+                    diet.forEach(d -> dietList.add(d.asText()));
+                    prefParts.add("dietary restrictions: " + String.join(", ", dietList));
+                }
+                
+                // Allergies
+                JsonNode allergies = prefsData.path("allergies");
+                if (allergies.isArray() && allergies.size() > 0) {
+                    List<String> allergyList = new ArrayList<>();
+                    allergies.forEach(a -> allergyList.add(a.asText()));
+                    prefParts.add("allergies: " + String.join(", ", allergyList));
+                }
+                
+                // Price range (camelCase from MCP)
+                JsonNode priceRange = prefsData.path("priceRange");
+                if (!priceRange.isMissingNode() && !priceRange.isNull()) {
+                    int priceLevel = priceRange.asInt();
+                    prefParts.add("price preference: " + "$".repeat(priceLevel) + " (budget-friendly)");
+                }
+                
+                // Favorite cuisines (camelCase from MCP)
+                JsonNode favorites = prefsData.path("favoriteCuisines");
+                if (favorites.isArray() && favorites.size() > 0) {
+                    List<String> favList = new ArrayList<>();
+                    favorites.forEach(f -> favList.add(f.asText()));
+                    prefParts.add("favorite cuisines: " + String.join(", ", favList));
+                }
+                
+                if (!prefParts.isEmpty()) {
+                    enhanced.append("User preferences: ").append(String.join("; ", prefParts)).append("\n\n");
+                }
+                
+            } catch (Exception e) {
+                System.err.println("Error parsing preferences JSON: " + e.getMessage());
+            }
+        }
+        
+        // Add specific history search results if available (SUMMARIZED to stay under Yelp limits)
+        if (context.hasHistorySearch() && context.getHistorySearchResult() != null) {
+            try {
+                JsonNode historyResult = objectMapper.readTree(context.getHistorySearchResult());
+                boolean found = historyResult.path("found").asBoolean(false);
+                
+                if (found) {
+                    JsonNode results = historyResult.path("results");
+                    if (results.isArray() && results.size() > 0) {
+                        List<String> restaurantNames = new ArrayList<>();
+                        
+                        for (JsonNode msg : results) {
+                            String content = msg.path("content").asText();
+                            
+                            // Skip help messages and commands
+                            if (content.contains("Commands:") || content.contains("/help") || 
+                                content.contains("/ping") || content.startsWith("/")) {
+                                continue;
+                            }
+                            
+                            // Extract restaurant names from formatted messages (first line only)
+                            // Format: "📍 Restaurant Name\n⭐ rating...\n🍽️ cuisine...\n📍 address..."
+                            // We want only the first 📍 line (name), not the address line
+                            String[] contentLines = content.split("\n");
+                            for (int i = 0; i < contentLines.length; i++) {
+                                String line = contentLines[i];
+                                if (line.startsWith("📍 ")) {
+                                    String text = line.substring(2).trim();
+                                    // Only take the FIRST 📍 line (restaurant name)
+                                    // Skip subsequent 📍 lines (they're addresses)
+                                    if (!restaurantNames.contains(text)) {
+                                        restaurantNames.add(text);
+                                    }
+                                    break; // Stop after first 📍 in this message
+                                }
+                            }
+                        }
+                        
+                        // Only add if we found actual restaurant recommendations
+                        if (!restaurantNames.isEmpty()) {
+                            enhanced.append("Previously recommended: ")
+                                   .append(String.join(", ", restaurantNames))
+                                   .append("\n\n");
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Error parsing chat history JSON: " + e.getMessage());
+            }
+        }
+        
+        // Skip recent conversation if we already have history search results (avoid duplication)
+        if (!context.hasHistorySearch() && recentHistory != null && !recentHistory.isEmpty()) {
+            // Only include very recent context if no history search was performed
+            String[] lines = recentHistory.split("\\\\n");
+            List<String> filteredLines = new ArrayList<>();
+            
+            for (String line : lines) {
+                // Skip error messages, help text, and very long lines
+                if (!line.contains("Error calling Yelp API") && 
+                    !line.contains("VALIDATION_ERROR") &&
+                    !line.contains("Bad Request") &&
+                    !line.contains("Commands:") &&
+                    line.length() < 200) {
+                    filteredLines.add(line);
+                }
+            }
+            
+            // Keep only the last 2 exchanges
+            int linesToKeep = Math.min(4, filteredLines.size());
+            List<String> recentLines = filteredLines.subList(
+                Math.max(0, filteredLines.size() - linesToKeep), 
+                filteredLines.size()
+            );
+            
+            if (!recentLines.isEmpty()) {
+                enhanced.append("Recent: ").append(String.join(" | ", recentLines)).append("\n\n");
+            }
+        }
+        
+        // Add current query
+        // Only add "Current query:" label if we have context to separate it from
+        if (enhanced.length() > 0) {
+            enhanced.append("Current query: ").append(originalQuery);
+        } else {
+            // No context - just use the raw query for natural language processing
+            enhanced.append(originalQuery);
+        }
+        
+        return enhanced.toString();
+    }
+    
+    /**
+     * Formats a response for recall queries by extracting restaurant details from chat history.
+     * Returns full restaurant cards that were found in past recommendations.
+     */
+    private String formatRecallResponse(String historySearchResult, String userQuery) {
+        try {
+            JsonNode historyResult = objectMapper.readTree(historySearchResult);
+            boolean found = historyResult.path("found").asBoolean(false);
+            
+            if (!found) {
+                return null;
+            }
+            
+            JsonNode results = historyResult.path("results");
+            if (!results.isArray() || results.size() == 0) {
+                return null;
+            }
+            
+            StringBuilder response = new StringBuilder();
+            int restaurantCount = 0;
+            
+            // Extract full restaurant cards (messages with 📍 format)
+            for (JsonNode msg : results) {
+                String content = msg.path("content").asText();
+                
+                // Skip help messages, commands, user queries, and recall responses
+                if (content.contains("Commands:") || content.startsWith("/") || 
+                    content.contains("what were") || content.contains("show me") ||
+                    content.startsWith("Here are the")) {
+                    continue;
+                }
+                
+                // Check if this is a formatted restaurant card
+                if (content.startsWith("📍 ")) {
+                    if (restaurantCount > 0) {
+                        response.append("\n\n");
+                    }
+                    response.append(content);
+                    restaurantCount++;
+                }
+            }
+            
+            if (restaurantCount == 0) {
+                return null;
+            }
+            
+            // Add a friendly intro
+            String intro = String.format("Here are the sushi places I recommended:\n\n");
+            return intro + response.toString();
+            
+        } catch (Exception e) {
+            System.err.println("Error formatting recall response: " + e.getMessage());
+            return null;
         }
     }
+    
+    // ============================================================================
+    // Result Classes
+    // ============================================================================
     
     public static class YelpResult {
         private final List<String> messages;
@@ -452,21 +850,55 @@ public class OpenAIService {
         }
     }
     
-    private static class MCPResult {
-        private final String formattedResponse;
-        private final String yelpConversationId;
+    /**
+     * Context result from OpenAI's DB MCP tool gathering.
+     * Contains user preferences and/or specific chat history search results.
+     */
+    private static class ContextResult {
+        private boolean hasPreferences = false;
+        private String preferencesJson = null;
+        private boolean hasHistorySearch = false;
+        private String historySearchResult = null;
+        private String summary = "";
         
-        public MCPResult(String formattedResponse, String yelpConversationId) {
-            this.formattedResponse = formattedResponse;
-            this.yelpConversationId = yelpConversationId;
+        public boolean hasPreferences() {
+            return hasPreferences;
         }
         
-        public String getFormattedResponse() {
-            return formattedResponse;
+        public void setHasPreferences(boolean hasPreferences) {
+            this.hasPreferences = hasPreferences;
         }
         
-        public String getYelpConversationId() {
-            return yelpConversationId;
+        public String getPreferencesJson() {
+            return preferencesJson;
+        }
+        
+        public void setPreferencesJson(String preferencesJson) {
+            this.preferencesJson = preferencesJson;
+        }
+        
+        public boolean hasHistorySearch() {
+            return hasHistorySearch;
+        }
+        
+        public void setHasHistorySearch(boolean hasHistorySearch) {
+            this.hasHistorySearch = hasHistorySearch;
+        }
+        
+        public String getHistorySearchResult() {
+            return historySearchResult;
+        }
+        
+        public void setHistorySearchResult(String historySearchResult) {
+            this.historySearchResult = historySearchResult;
+        }
+        
+        public String getSummary() {
+            return summary;
+        }
+        
+        public void setSummary(String summary) {
+            this.summary = summary;
         }
     }
 }

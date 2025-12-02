@@ -10,9 +10,16 @@ RUN mvn dependency:go-offline -B
 COPY src ./src
 RUN mvn clean package -DskipTests
 
-# Runtime stage
-FROM eclipse-temurin:17-jre-alpine
+# Runtime stage with Node.js for MCP support
+FROM eclipse-temurin:17-jre
 WORKDIR /app
+
+# Install Node.js 20
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy the built jar from build stage
 COPY --from=build /app/target/linebot-bridge-*.jar app.jar

@@ -40,7 +40,7 @@ public class YelpService {
         this.objectMapper = new ObjectMapper();
     }
 
-    public YelpChatResult callYelpChat(String query, String lineConversationId) {
+    public YelpChatResult callYelpChat(String query, String lineConversationId, String userId) {
         List<String> messages = new ArrayList<>();
         String yelpConversationId = null;
 
@@ -60,8 +60,8 @@ public class YelpService {
                 chatHistory = getChatHistory(existingYelpConvId);
             }
             
-            // Call OpenAI with yelp_agent tool, passing the yelpConversationId and chat history
-            OpenAIService.YelpResult result = openAIService.callOpenAIWithYelpTool(query, existingYelpConvId, chatHistory);
+            // Call OpenAI with yelp_agent tool, passing the yelpConversationId, chat history, and LINE conversation ID
+            OpenAIService.YelpResult result = openAIService.callOpenAIWithYelpTool(query, existingYelpConvId, chatHistory, lineConversationId);
             messages = result.getMessages();
             List<List<String>> photos = result.getPhotos();
             yelpConversationId = result.getYelpConversationId();
@@ -176,8 +176,10 @@ public class YelpService {
                         boolean isUser = !messageId.startsWith("push-");
                         
                         if (isUser) {
-                            // Include all user messages
-                            messages.add("User: " + content);
+                            // Skip status messages (🔍, ⏳, etc.)
+                            if (!content.startsWith("🔍") && !content.startsWith("⏳") && !content.startsWith("✅")) {
+                                messages.add("User: " + content);
+                            }
                         } else {
                             // For assistant messages, only include if it's a summary (doesn't start with emoji)
                             // Skip individual business card messages (they start with 📍)

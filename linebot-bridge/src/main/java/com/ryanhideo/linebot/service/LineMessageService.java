@@ -149,7 +149,7 @@ public class LineMessageService {
                 messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
                 return new MessageResult(replies, emptyPhotos, yelpConversationId);
             } else {
-                YelpService.YelpChatResult result = yelpService.callYelpChat(prompt, lineConversationI);
+                YelpService.YelpChatResult result = yelpService.callYelpChat(prompt, lineConversationI, userId);
                 replies.addAll(result.getMessages());
                 yelpConversationId = result.getChatId();
                 messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
