@@ -165,8 +165,6 @@ public class LineMessageService {
             replies.add(
                     "Commands:\n" +
                     "- /help: show this help\n" +
-                    "- /ping: test latency\n" +
-                    "- /echo <text>: I'll repeat your text\n" +
                     "- /diet <restrictions>: set dietary restrictions (e.g. /diet vegan, gluten-free)\n" +
                     "- /allergies <allergens>: set allergens (e.g. /allergies peanuts, shellfish)\n" +
                     "- /price <level>: set price level 1-4 (e.g. /price 2)\n" +
@@ -174,16 +172,6 @@ public class LineMessageService {
                     "- /prefs: view your current preferences\n" +
                     "- /yelp <query>: ask Yelp AI (e.g. /yelp good vegan sushi in SF)"
             );
-            // Insert message into database before returning
-            messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
-            return new MessageResult(replies, emptyPhotos, yelpConversationId);
-        } else if (lower.equals("/ping")) {
-            replies.add("pong 🏓");
-            // Insert message into database before returning
-            messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
-            return new MessageResult(replies, emptyPhotos, yelpConversationId);
-        } else if (lower.startsWith("/echo ")) {
-            replies.add(trimmed.substring(6).trim());
             // Insert message into database before returning
             messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
             return new MessageResult(replies, emptyPhotos, yelpConversationId);
