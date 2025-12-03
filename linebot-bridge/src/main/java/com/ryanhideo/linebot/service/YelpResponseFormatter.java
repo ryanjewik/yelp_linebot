@@ -37,8 +37,6 @@ public class YelpResponseFormatter {
             formattedOutput.append("# Formatted Business Data for LLM Processing\n\n");
             formattedOutput.append("## Introduction\n");
             formattedOutput.append(introText).append("\n \n");
-            formattedOutput.append("## Chat ID\n");
-            formattedOutput.append(chatId).append("\n\n");
             
             // Check if entities and businesses exist
             List<JsonNode> businesses = new ArrayList<>();

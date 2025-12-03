@@ -134,9 +134,12 @@ public class OpenAIService {
             header = header.replaceAll("(?s)^#.*?## Introduction\\s*", "");
             // Remove Chat ID section more aggressively
             header = header.replaceAll("(?m)^##\\s*Chat ID.*", "");
-            header = header.replaceAll("(?m)^[KM][A-Za-z0-9_-]+$", "");  // Remove chat IDs (MK75LzAIhwyAeb_8IOwZ7A format)
-            header = header.replaceAll("(?m)[KM][A-Za-z0-9_-]{10,}\\s*$", "");  // Remove chat IDs at end of text
-            header = header.replaceAll("\\n{2,}", "\n");
+            // Remove chat IDs - more aggressive patterns to catch all formats
+            // Format: Jc71Tdh_mBpWdsG19zKbnQ (22 chars, alphanumeric + _ + -)
+            header = header.replaceAll("(?m)^\\s*[A-Za-z][A-Za-z0-9_-]{15,}\\s*$", "");  // Remove standalone chat IDs on own line
+            header = header.replaceAll("(?m)\\n\\s*[A-Za-z][A-Za-z0-9_-]{15,}\\s*$", "");  // Remove chat IDs after newline at end
+            header = header.replaceAll("\\s+[A-Za-z][A-Za-z0-9_-]{21}\\s*$", "");  // Remove 22-char chat IDs at end (typical length)
+            header = header.replaceAll("\\n{3,}", "\n\n");  // Clean up excessive newlines
             header = header.trim();
             
             if (!header.isEmpty()) {
