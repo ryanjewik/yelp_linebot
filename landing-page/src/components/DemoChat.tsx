@@ -35,12 +35,8 @@ export default function DemoChat() {
     setIsLoading(true);
 
     try {
-      // Browser needs to use localhost, not container name
-      const apiUrl = window.location.hostname === 'localhost' 
-        ? 'http://localhost:8000' 
-        : `http://${window.location.hostname}:8000`;
-      
-      const response = await fetch(`${apiUrl}/api/demo/chat`, {
+      // Use relative URL - nginx proxy will route to backend
+      const response = await fetch('/api/demo/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

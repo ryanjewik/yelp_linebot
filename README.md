@@ -1,101 +1,225 @@
 # Yelp LINE Bot
 
-A LINE messaging bot that provides restaurant recommendations powered by Yelp Fusion AI API.
+An AI-powered restaurant discovery chatbot for LINE that helps users find the perfect dining spot based on their preferences, dietary restrictions, and past conversations. Built with Spring Boot, PostgreSQL, and integrated with Yelp Fusion AI API, OpenAI GPT-4o, and Model Context Protocol (MCP) servers.
 
-## Architecture
+🌐 **Live Demo**: [https://yelplinebot.win](https://yelplinebot.win)
 
-### Services
+## 🎯 Overview
 
-- **linebot-bridge** (Spring Boot 3.5): Main application handling LINE messages and Yelp API calls
-- **linebot-db** (PostgreSQL 18): Database for storing conversations, messages, and user preferences
+The Yelp LINE Bot is a conversational assistant that lives in your LINE messaging app. It combines the power of Yelp's comprehensive restaurant database with AI-driven natural language understanding to deliver personalized dining recommendations.
 
 ### Key Features
 
-- **Direct Yelp Integration**: Native Java implementation calling Yelp Fusion AI API directly
-- **Hybrid Approach**: 
-  - OpenAI GPT-4o for context gathering (user preferences, chat history search)
-  - Direct Yelp API calls for reliable restaurant search
-- **User Preferences**: Dietary restrictions, allergies, price range, favorite cuisines
-- **Conversation History**: Chat history tracking with Yelp's conversation ID system
-- **Rich Responses**: Business details, ratings, photos, hours, amenities
+- 🍽️ **Smart Restaurant Discovery**: Natural language queries like "find good vegan sushi in SF under $30"
+- 👥 **Group Preferences**: Automatically considers dietary restrictions and preferences of all group members
+- 💬 **Conversation Memory**: Recalls past recommendations and learns from your history
+- 🎯 **Personalization**: Remembers your dietary needs, allergies, favorite cuisines, and budget
+- 📸 **Rich Responses**: Restaurant photos, ratings, hours, amenities, and direct Yelp links
+- 🌐 **Interactive Landing Page**: Try the bot with a live demo chat before adding on LINE
 
-## Setup
+## 🏗️ Architecture
 
-1. Copy `.env.example` to `.env` and fill in your credentials:
-   - `LINE_CHANNEL_SECRET` and `LINE_CHANNEL_ACCESS_TOKEN`
-   - `YELP_API_KEY`
-   - `OPENAI_API_KEY`
-   - Database credentials
+### System Components
 
-2. Build and start services:
-   ```bash
-   docker compose up -d
-   ```
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Nginx Proxy                         │
+│  • HTTPS/SSL termination (Cloudflare Origin Certs)         │
+│  • Route: / → Landing Page                                 │
+│  • Route: /api/* → Backend API                             │
+│  • Route: /callback → LINE Webhook                         │
+└─────────────────────────────────────────────────────────────┘
+                    │                    │
+        ┌───────────┴──────────┐        │
+        ▼                      ▼        ▼
+┌──────────────┐      ┌─────────────────────────────┐
+│ Landing Page │      │   Spring Boot Backend       │
+│              │      │   (linebot-bridge)          │
+│  React 18    │      │                             │
+│  + Vite      │      │  • LINE Webhook Handler     │
+│  + Tailwind  │      │  • Yelp API Integration     │
+│              │      │  • OpenAI GPT-4o Service    │
+│  Demo Chat   │      │  • MCP Client Service       │
+│  Component   │      │  • User Preferences         │
+└──────────────┘      └─────────────────────────────┘
+                                 │
+                    ┌────────────┼────────────┐
+                    ▼            ▼            ▼
+            ┌─────────────┐  ┌──────┐  ┌──────────┐
+            │ PostgreSQL  │  │ MCP  │  │ MCP      │
+            │             │  │ User │  │ Chat     │
+            │ • Users     │  │ Prefs│  │ History  │
+            │ • Messages  │  │ (Node│  │ (Node.js)│
+            │ • Convos    │  │ .js) │  │          │
+            └─────────────┘  └──────┘  └──────────┘
+```
 
-## User Commands
+### Technology Stack
 
-- `/yelp <query>` - Search for restaurants
-- `/diet <restrictions>` - Set dietary restrictions (e.g., vegan, vegetarian)
-- `/allergies <allergies>` - Set allergies (e.g., peanuts, shellfish)
-- `/price <1-4>` - Set price preference (1=$, 2=$$, 3=$$$, 4=$$$$)
-- `/favorites <cuisines>` - Set favorite cuisines
-- `/prefs` - View current preferences
+**Frontend**:
+- React 18 with TypeScript
+- Vite for build tooling
+- Tailwind CSS v4 with Noto Sans font
+- Demo chat component with Yelp AI integration
 
-## Recent Changes
+**Backend**:
+- Spring Boot 3.5.9 (Java 17)
+- PostgreSQL 18
+- RestTemplate for HTTP clients
+- Jackson for JSON processing
 
-### Migration from Python Flask MCP to Java
+**Infrastructure**:
+- Docker Compose for container orchestration
+- Nginx as reverse proxy (Alpine)
+- Cloudflare Origin certificates for SSL/TLS
+- Deployed on AWS EC2 (Amazon Linux 2)
 
-**Date**: December 1, 2025
+**APIs & Services**:
+- LINE Messaging API (webhooks)
+- Yelp Fusion AI API v2
+- OpenAI GPT-4o (context gathering)
+- Model Context Protocol (MCP) servers for database queries
 
-The Yelp API integration has been migrated from a separate Python Flask "MCP" server to native Java services within the Spring Boot application:
+## 💬 User Commands
 
-#### Before:
-- Separate Python Flask container (`yelp-mcp`)
-- HTTP calls from Java to Python service
-- Additional container overhead
+### Restaurant Search
+```
+/yelp <query>
+```
+Examples:
+- `/yelp vegan ramen in Tokyo`
+- `/yelp cheap mexican food near me`
+- `/yelp romantic restaurants for anniversary dinner`
 
-#### After:
-- `YelpApiService.java`: Direct Yelp Fusion AI API calls
-- `YelpResponseFormatter.java`: Response formatting in Java
-- Removed Python dependency
-- Simplified architecture
+### Preference Management
+```
+/diet <restrictions>    - Set dietary preferences (vegan, vegetarian, gluten-free, etc.)
+/allergies <items>      - Set allergen information (peanuts, shellfish, dairy, etc.)
+/price <1-4>            - Set budget level (1=$, 2=$$, 3=$$$, 4=$$$$)
+/favorites <cuisines>   - Set favorite cuisines (Italian, Japanese, Thai, etc.)
+/prefs                  - View your current preferences
+```
 
-#### Benefits:
-- ✅ Fewer moving parts (1 less container)
-- ✅ Better error handling in Java
-- ✅ Easier debugging and logging
-- ✅ Reduced latency (no inter-container HTTP calls)
-- ✅ Consistent codebase (all Java)
+### Other Commands
+```
+/help                   - Show all available commands
+```
 
-## MCP Servers (Node.js)
+## 🛠️ How It Works
 
-### User Preferences MCP ✅
+### 1. Message Reception
+- User sends a message in LINE (DM or group chat)
+- LINE forwards the webhook event to `/callback`
+- Nginx proxies the request to Spring Boot backend
+- Signature validation ensures request authenticity
 
-**Status**: Implemented  
-**Location**: `mcps/user-prefs-mcp/`  
-**Purpose**: Retrieves preferences from ALL members in a conversation
+### 2. Context Gathering (OpenAI + MCP)
+For `/yelp` queries, the system:
+- Launches OpenAI GPT-4o with function calling
+- GPT-4o can call MCP servers via subprocess:
+  - **User Preferences MCP**: Retrieves dietary restrictions, allergies, price range, and favorite cuisines for all group members
+  - **Chat History MCP**: Searches past conversations if user references previous recommendations
 
-**Tool**: `get_user_preferences`
-- Gets preferences for all conversation members (via `chat_members` table)
-- Aggregates dietary restrictions, allergies, favorite cuisines
-- Uses minimum price range (most budget-conscious member)
-- Called by OpenAI during context gathering phase
-- Runs as subprocess, communicates via JSON-RPC over stdio
+### 3. Yelp API Integration
+- Extracted context (location, cuisine, preferences) is sent to Yelp Fusion AI API
+- Yelp returns restaurant matches with business details
+- Conversation ID is tracked for follow-up queries
 
-### Chat History MCP ✅
+### 4. Response Formatting
+- Restaurant data is formatted into rich text messages
+- Includes: name, rating, price level, address, phone, hours, amenities
+- Photos are attached when available
+- Messages are sent back to LINE via reply or push API
 
-**Status**: Implemented  
-**Location**: `mcps/chat-history-mcp/`  
-**Purpose**: Search past conversation messages for recall queries
+### 5. Database Persistence
+- Messages are stored in PostgreSQL for history
+- User preferences are updated with each `/diet`, `/allergies`, etc. command
+- Conversation context is maintained across sessions
 
-**Tool**: `search_chat_history`
-- Searches messages table for relevant past conversations
-- Triggered when user references past recommendations: "what did you suggest yesterday?"
-- Returns matching messages with timestamps
-- Runs as subprocess, communicates via JSON-RPC over stdio
+## 📁 Project Structure
 
-## Future Enhancements
+```
+yelp_linebot/
+├── landing-page/              # React landing page
+│   ├── src/
+│   │   ├── components/
+│   │   │   └── DemoChat.tsx   # Interactive demo
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   ├── Dockerfile
+│   └── nginx.conf
+│
+├── linebot-bridge/            # Spring Boot backend
+│   ├── src/main/java/com/ryanhideo/linebot/
+│   │   ├── controller/
+│   │   │   ├── LineCallbackController.java
+│   │   │   └── DemoChatController.java
+│   │   ├── service/
+│   │   │   ├── LineMessageService.java
+│   │   │   ├── YelpApiService.java
+│   │   │   ├── OpenAIService.java
+│   │   │   ├── McpClientService.java
+│   │   │   └── UserPreferencesService.java
+│   │   ├── config/
+│   │   └── util/
+│   ├── Dockerfile
+│   └── pom.xml
+│
+├── mcps/                      # MCP Servers (Node.js)
+│   ├── user-prefs-mcp/        # User preferences retrieval
+│   └── chat-history-mcp/      # Conversation history search
+│
+├── nginx/                     # Reverse proxy configuration
+│   ├── nginx.conf
+│   └── ssl/
+│       ├── origin-cert.pem    # Cloudflare Origin Certificate
+│       └── origin-key.pem
+│
+├── docker-compose.yml         # Container orchestration
+└── README.md
+```
 
-- Vector embeddings for semantic chat history search
-- Enhanced photo carousel display
-- Multi-location comparison
+## 🔐 Security Features
+
+- **HTTPS/TLS**: Cloudflare Origin certificates with TLSv1.2/1.3
+- **Webhook Signature Verification**: LINE requests are validated using HMAC-SHA256
+- **Rate Limiting**: Nginx rate limits API requests (10 req/s for API, 30 req/s general)
+- **Security Headers**: HSTS, X-Frame-Options, X-Content-Type-Options, X-XSS-Protection
+- **Environment Variables**: Sensitive credentials stored in `.env` (not committed)
+- **Input Sanitization**: All user inputs are validated before processing
+
+
+## 🧪 Testing
+
+### Test Demo Chat
+Visit [https://yelplinebot.win](https://yelplinebot.win) and use the interactive demo chat to test Yelp AI queries without adding the bot to LINE.
+
+### Test LINE Integration
+1. Scan the QR code on the landing page
+2. Add the bot as a friend
+3. Send: `/yelp good pizza in NYC`
+4. Check backend logs for processing
+
+### Verify Webhook
+```bash
+curl -X POST https://yelplinebot.win/callback \
+  -H "Content-Type: application/json" \
+  -H "X-Line-Signature: test" \
+  -d '{"events":[]}'
+```
+
+
+## 👤 Author
+
+**Ryan Jewik**
+- Portfolio: [ryanjewik.com](https://ryanjewik.com)
+- GitHub: [@ryanjewik](https://github.com/ryanjewik)
+- LINE Bot: [Scan QR code at yelplinebot.win](https://yelplinebot.win)
+
+## 🙏 Acknowledgments
+
+- LINE Messaging API for webhook infrastructure
+- Yelp Fusion AI API for restaurant data
+- OpenAI GPT-4o for natural language understanding
+- Model Context Protocol for database query abstraction
+- Cloudflare for SSL/TLS certificates
