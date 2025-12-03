@@ -1,5 +1,6 @@
 import lineLogo from './assets/line_qr.png'
 import './App.css'
+import DemoChat from './components/DemoChat'
 
 function App() {
   return (
@@ -109,13 +110,13 @@ function App() {
             </div>
           </div>
           {/* DEMO area */}
-          <div className="border-t border-[#06c755]/20 flex flex-col items-center justify-center bg-[#06c755]/5" style ={{borderTop: '2px solid #06c755', paddingBottom: '10px', margin: '24px'}}> 
-            <h4 className="font-light text-gray-600 text-xs text-center" style={{ marginBottom: '8px' }}>
-              DEMO AREA
+          <div className="border-t border-[#06c755]/20 flex flex-col items-center justify-center bg-[#06c755]/5" style ={{borderTop: '2px solid #06c755', paddingBottom: '24px', paddingTop: '24px', margin: '24px'}}> 
+            <h4 className="font-semibold text-gray-800 text-lg text-center" style={{ marginBottom: '16px' }}>
+              Try out the Yelp API!
             </h4>
-              <div style = {{ display: 'flex', flexDirection: 'row', gap: '8px', margin: '8px', width: '70rem', height: '30rem', backgroundColor: '#313131ff', borderRadius: '12px', border: '3px solid #06c755' }} className="demo-area">
-
-              </div>
+            <div style = {{ display: 'flex', flexDirection: 'column', width: '100%', maxWidth: '900px', height: '500px', backgroundColor: '#252525ff', borderRadius: '12px', border: '2px solid #06c755', overflow: 'hidden' }} className="demo-area">
+              <DemoChat />
+            </div>
           </div>
           {/* links footer */}
           <div className="border-t border-[#06c755]/20 flex flex-col items-center justify-center bg-[#06c755]/5" style ={{borderTop: '2px solid #06c755', paddingBottom: '16px', margin: '24px'}}> 
