@@ -54,14 +54,21 @@ public class LineMessageService {
         if (trimmed.startsWith("/diet ")) {
             String dietText = trimmed.substring("/diet".length()).trim();
             if (dietText.isEmpty()) {
-                replies.add("Usage: /diet <restrictions>\nExample: /diet vegan, gluten-free");
+                replies.add("Usage: /diet <restrictions>\nExample: /diet vegan, gluten-free\n/diet clear - clear only diet restrictions");
+            } else if (dietText.equalsIgnoreCase("clear")) {
+                userPreferencesService.clearDiet(userId);
+                replies.add("✅ Cleared your dietary restrictions");
             } else {
                 String[] dietItems = Arrays.stream(dietText.split(","))
                     .map(String::trim)
                     .filter(s -> !s.isEmpty())
                     .toArray(String[]::new);
-                userPreferencesService.updateDiet(userId, dietItems);
-                replies.add("✅ Updated your dietary restrictions to: " + String.join(", ", dietItems));
+                userPreferencesService.appendDiet(userId, dietItems);
+                
+                // Get updated preferences to show current state
+                UserPreferencesService.UserPreferences prefs = userPreferencesService.getUserPreferences(userId);
+                replies.add("✅ Added to your dietary restrictions: " + String.join(", ", dietItems) + 
+                           "\n\nCurrent diet list: " + String.join(", ", prefs.getDiet()));
             }
             List<List<String>> emptyPhotos = new ArrayList<>();
             emptyPhotos.add(new ArrayList<>());
@@ -73,14 +80,21 @@ public class LineMessageService {
         if (trimmed.startsWith("/allergies ")) {
             String allergiesText = trimmed.substring("/allergies".length()).trim();
             if (allergiesText.isEmpty()) {
-                replies.add("Usage: /allergies <allergens>\nExample: /allergies peanuts, shellfish");
+                replies.add("Usage: /allergies <allergens>\nExample: /allergies peanuts, shellfish\n/allergies clear - clear only allergies");
+            } else if (allergiesText.equalsIgnoreCase("clear")) {
+                userPreferencesService.clearAllergies(userId);
+                replies.add("✅ Cleared your allergies");
             } else {
                 String[] allergyItems = Arrays.stream(allergiesText.split(","))
                     .map(String::trim)
                     .filter(s -> !s.isEmpty())
                     .toArray(String[]::new);
-                userPreferencesService.updateAllergies(userId, allergyItems);
-                replies.add("✅ Updated your allergies to: " + String.join(", ", allergyItems));
+                userPreferencesService.appendAllergies(userId, allergyItems);
+                
+                // Get updated preferences to show current state
+                UserPreferencesService.UserPreferences prefs = userPreferencesService.getUserPreferences(userId);
+                replies.add("✅ Added to your allergies: " + String.join(", ", allergyItems) + 
+                           "\n\nCurrent allergies list: " + String.join(", ", prefs.getAllergies()));
             }
             List<List<String>> emptyPhotos = new ArrayList<>();
             emptyPhotos.add(new ArrayList<>());
@@ -91,17 +105,22 @@ public class LineMessageService {
         // /price command
         if (trimmed.startsWith("/price ")) {
             String priceText = trimmed.substring("/price".length()).trim();
-            try {
-                int priceLevel = Integer.parseInt(priceText);
-                if (priceLevel < 1 || priceLevel > 4) {
-                    replies.add("❌ Price level must be between 1 and 4\n$ = Budget\n$$ = Moderate\n$$$ = Upscale\n$$$$ = Luxury");
-                } else {
-                    userPreferencesService.updatePriceRange(userId, priceLevel);
-                    String priceDisplay = "$".repeat(priceLevel);
-                    replies.add("✅ Updated your price preference to: " + priceDisplay + " (" + priceLevel + ")");
+            if (priceText.equalsIgnoreCase("clear")) {
+                userPreferencesService.clearPriceRange(userId);
+                replies.add("✅ Cleared your price preference");
+            } else {
+                try {
+                    int priceLevel = Integer.parseInt(priceText);
+                    if (priceLevel < 1 || priceLevel > 4) {
+                        replies.add("❌ Price level must be between 1 and 4\n$ = Budget\n$$ = Moderate\n$$$ = Upscale\n$$$$ = Luxury");
+                    } else {
+                        userPreferencesService.updatePriceRange(userId, priceLevel);
+                        String priceDisplay = "$".repeat(priceLevel);
+                        replies.add("✅ Updated your price preference to: " + priceDisplay + " (" + priceLevel + ")");
+                    }
+                } catch (NumberFormatException e) {
+                    replies.add("❌ Invalid price level. Please use a number between 1 and 4\nExample: /price 2\n/price clear - clear only price preference");
                 }
-            } catch (NumberFormatException e) {
-                replies.add("❌ Invalid price level. Please use a number between 1 and 4\nExample: /price 2");
             }
             List<List<String>> emptyPhotos = new ArrayList<>();
             emptyPhotos.add(new ArrayList<>());
@@ -113,14 +132,21 @@ public class LineMessageService {
         if (trimmed.startsWith("/favorites ")) {
             String favoritesText = trimmed.substring("/favorites".length()).trim();
             if (favoritesText.isEmpty()) {
-                replies.add("Usage: /favorites <cuisines, foods>\nExample: /favorites sushi, Italian, tacos");
+                replies.add("Usage: /favorites <cuisines, foods>\nExample: /favorites sushi, Italian, tacos\n/favorites clear - clear only favorite cuisines");
+            } else if (favoritesText.equalsIgnoreCase("clear")) {
+                userPreferencesService.clearFavoriteCuisines(userId);
+                replies.add("✅ Cleared your favorite cuisines");
             } else {
                 String[] cuisineItems = Arrays.stream(favoritesText.split(","))
                     .map(String::trim)
                     .filter(s -> !s.isEmpty())
                     .toArray(String[]::new);
-                userPreferencesService.updateFavoriteCuisines(userId, cuisineItems);
-                replies.add("✅ Updated your favorite cuisines to: " + String.join(", ", cuisineItems));
+                userPreferencesService.appendFavoriteCuisines(userId, cuisineItems);
+                
+                // Get updated preferences to show current state
+                UserPreferencesService.UserPreferences prefs = userPreferencesService.getUserPreferences(userId);
+                replies.add("✅ Added to your favorite cuisines: " + String.join(", ", cuisineItems) + 
+                           "\n\nCurrent favorites list: " + String.join(", ", prefs.getFavoriteCuisines()));
             }
             List<List<String>> emptyPhotos = new ArrayList<>();
             emptyPhotos.add(new ArrayList<>());
@@ -129,9 +155,14 @@ public class LineMessageService {
         }
         
         // /preferences or /prefs command to view current settings
-        if (lower.equals("/preferences") || lower.equals("/prefs")) {
-            UserPreferencesService.UserPreferences prefs = userPreferencesService.getUserPreferences(userId);
-            replies.add(prefs.toDisplayString());
+        if (lower.equals("/preferences") || lower.equals("/prefs") || lower.startsWith("/prefs ") || lower.startsWith("/preferences ")) {
+            if (lower.endsWith(" clear") || lower.equals("/prefs clear") || lower.equals("/preferences clear")) {
+                userPreferencesService.clearAllPreferences(userId);
+                replies.add("✅ Cleared all your preferences (diet, allergies, price, favorites)");
+            } else {
+                UserPreferencesService.UserPreferences prefs = userPreferencesService.getUserPreferences(userId);
+                replies.add(prefs.toDisplayString());
+            }
             List<List<String>> emptyPhotos = new ArrayList<>();
             emptyPhotos.add(new ArrayList<>());
             messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
@@ -165,11 +196,13 @@ public class LineMessageService {
             replies.add(
                     "Commands:\n" +
                     "- /help: show this help\n" +
-                    "- /diet <restrictions>: set dietary restrictions (e.g. /diet vegan, gluten-free)\n" +
-                    "- /allergies <allergens>: set allergens (e.g. /allergies peanuts, shellfish)\n" +
+                    "- /diet <restrictions>: add dietary restrictions (e.g. /diet vegan, gluten-free)\n" +
+                    "- /allergies <allergens>: add allergens (e.g. /allergies peanuts, shellfish)\n" +
                     "- /price <level>: set price level 1-4 (e.g. /price 2)\n" +
-                    "- /favorites <cuisines>: set favorite cuisines (e.g. /favorites sushi, Italian)\n" +
+                    "- /favorites <cuisines>: add favorite cuisines (e.g. /favorites sushi, Italian)\n" +
                     "- /prefs: view your current preferences\n" +
+                    "- /prefs clear: clear ALL preferences\n" +
+                    "- /diet clear, /allergies clear, /price clear, /favorites clear: clear individual preferences\n" +
                     "- /yelp <query>: ask Yelp AI (e.g. /yelp good vegan sushi in SF)"
             );
             // Insert message into database before returning

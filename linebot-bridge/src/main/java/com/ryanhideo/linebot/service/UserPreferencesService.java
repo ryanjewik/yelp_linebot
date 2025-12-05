@@ -40,6 +40,36 @@ public class UserPreferencesService {
         }
     }
 
+    public void appendDiet(String userId, String[] newDietItems) {
+        try (Connection conn = getConnection()) {
+            // Get existing diet
+            String selectSql = "SELECT diet FROM users WHERE userid = ?";
+            String[] existingDiet = new String[0];
+            try (PreparedStatement selectStmt = conn.prepareStatement(selectSql)) {
+                selectStmt.setString(1, userId);
+                try (ResultSet rs = selectStmt.executeQuery()) {
+                    if (rs.next()) {
+                        Array dietArray = rs.getArray("diet");
+                        if (dietArray != null) {
+                            existingDiet = (String[]) dietArray.getArray();
+                        }
+                    }
+                }
+            }
+            
+            // Merge and deduplicate
+            java.util.Set<String> dietSet = new java.util.HashSet<>(Arrays.asList(existingDiet));
+            dietSet.addAll(Arrays.asList(newDietItems));
+            String[] mergedDiet = dietSet.toArray(new String[0]);
+            
+            // Update with merged list
+            updateDiet(userId, mergedDiet);
+        } catch (Exception e) {
+            System.err.println("Error appending diet: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
     public void updateAllergies(String userId, String[] allergyItems) {
         try (Connection conn = getConnection()) {
             String sql = "INSERT INTO users (userid, allergies) VALUES (?, ?) " +
@@ -53,6 +83,36 @@ public class UserPreferencesService {
             }
         } catch (Exception e) {
             System.err.println("Error updating allergies: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public void appendAllergies(String userId, String[] newAllergyItems) {
+        try (Connection conn = getConnection()) {
+            // Get existing allergies
+            String selectSql = "SELECT allergies FROM users WHERE userid = ?";
+            String[] existingAllergies = new String[0];
+            try (PreparedStatement selectStmt = conn.prepareStatement(selectSql)) {
+                selectStmt.setString(1, userId);
+                try (ResultSet rs = selectStmt.executeQuery()) {
+                    if (rs.next()) {
+                        Array allergiesArray = rs.getArray("allergies");
+                        if (allergiesArray != null) {
+                            existingAllergies = (String[]) allergiesArray.getArray();
+                        }
+                    }
+                }
+            }
+            
+            // Merge and deduplicate
+            java.util.Set<String> allergiesSet = new java.util.HashSet<>(Arrays.asList(existingAllergies));
+            allergiesSet.addAll(Arrays.asList(newAllergyItems));
+            String[] mergedAllergies = allergiesSet.toArray(new String[0]);
+            
+            // Update with merged list
+            updateAllergies(userId, mergedAllergies);
+        } catch (Exception e) {
+            System.err.println("Error appending allergies: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -86,6 +146,79 @@ public class UserPreferencesService {
             }
         } catch (Exception e) {
             System.err.println("Error updating favorite cuisines: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public void appendFavoriteCuisines(String userId, String[] newCuisines) {
+        try (Connection conn = getConnection()) {
+            // Get existing cuisines
+            String selectSql = "SELECT favoritecuisines FROM users WHERE userid = ?";
+            String[] existingCuisines = new String[0];
+            try (PreparedStatement selectStmt = conn.prepareStatement(selectSql)) {
+                selectStmt.setString(1, userId);
+                try (ResultSet rs = selectStmt.executeQuery()) {
+                    if (rs.next()) {
+                        Array cuisinesArray = rs.getArray("favoritecuisines");
+                        if (cuisinesArray != null) {
+                            existingCuisines = (String[]) cuisinesArray.getArray();
+                        }
+                    }
+                }
+            }
+            
+            // Merge and deduplicate
+            java.util.Set<String> cuisinesSet = new java.util.HashSet<>(Arrays.asList(existingCuisines));
+            cuisinesSet.addAll(Arrays.asList(newCuisines));
+            String[] mergedCuisines = cuisinesSet.toArray(new String[0]);
+            
+            // Update with merged list
+            updateFavoriteCuisines(userId, mergedCuisines);
+        } catch (Exception e) {
+            System.err.println("Error appending favorite cuisines: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public void clearDiet(String userId) {
+        updateDiet(userId, new String[0]);
+        System.out.println("Cleared diet for user " + userId);
+    }
+
+    public void clearAllergies(String userId) {
+        updateAllergies(userId, new String[0]);
+        System.out.println("Cleared allergies for user " + userId);
+    }
+
+    public void clearFavoriteCuisines(String userId) {
+        updateFavoriteCuisines(userId, new String[0]);
+        System.out.println("Cleared favorite cuisines for user " + userId);
+    }
+
+    public void clearPriceRange(String userId) {
+        try (Connection conn = getConnection()) {
+            String sql = "UPDATE users SET pricerangepref = NULL WHERE userid = ?";
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setString(1, userId);
+                pstmt.executeUpdate();
+                System.out.println("Cleared price range for user " + userId);
+            }
+        } catch (Exception e) {
+            System.err.println("Error clearing price range: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public void clearAllPreferences(String userId) {
+        try (Connection conn = getConnection()) {
+            String sql = "UPDATE users SET diet = '{}', allergies = '{}', favoritecuisines = '{}', pricerangepref = NULL WHERE userid = ?";
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setString(1, userId);
+                int rowsAffected = pstmt.executeUpdate();
+                System.out.println("Cleared all preferences for user " + userId + " (rows affected: " + rowsAffected + ")");
+            }
+        } catch (Exception e) {
+            System.err.println("Error clearing all preferences: " + e.getMessage());
             e.printStackTrace();
         }
     }
