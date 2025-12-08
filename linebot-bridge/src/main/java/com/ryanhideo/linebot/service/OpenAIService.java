@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.ryanhideo.linebot.config.OpenAIProperties;
+import com.ryanhideo.linebot.model.RestaurantData;
 import com.ryanhideo.linebot.config.YelpProperties;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,8 @@ public class OpenAIService {
     private final OpenAIProperties openAIProperties;
     private final YelpProperties yelpProperties;
     private final YelpApiService yelpApiService;
+    private final ConversationAggregatesService conversationAggregatesService;
+    private final UserPreferencesService userPreferencesService;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
     private static final String OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
@@ -31,10 +34,14 @@ public class OpenAIService {
     
     private static final int MAX_ITERATIONS = 5;
     
-    public OpenAIService(OpenAIProperties openAIProperties, YelpProperties yelpProperties, YelpApiService yelpApiService) {
+    public OpenAIService(OpenAIProperties openAIProperties, YelpProperties yelpProperties, 
+                        YelpApiService yelpApiService, ConversationAggregatesService conversationAggregatesService,
+                        UserPreferencesService userPreferencesService) {
         this.openAIProperties = openAIProperties;
         this.yelpProperties = yelpProperties;
         this.yelpApiService = yelpApiService;
+        this.conversationAggregatesService = conversationAggregatesService;
+        this.userPreferencesService = userPreferencesService;
         this.objectMapper = new ObjectMapper();
         this.restTemplate = new RestTemplate();
     }
@@ -57,6 +64,7 @@ public class OpenAIService {
     public YelpResult callOpenAIWithYelpTool(String userQuery, String yelpConversationId, String chatHistory, String lineConversationId) {
         List<String> messages = new ArrayList<>();
         List<List<String>> photosList = new ArrayList<>();
+        List<RestaurantData> restaurants = new ArrayList<>();
         String newYelpConversationId = yelpConversationId;
         
         try {
@@ -93,7 +101,24 @@ public class OpenAIService {
                 newYelpConversationId = yelpResult.getChatId();
             }
             
-            // Step 5: Clean up and split the formatted response into separate messages with photos
+            // Step 5: Extract structured restaurant data from raw response
+            if (yelpResult.getRawResponse() != null) {
+                System.out.println("[EXTRACT] Raw response exists, extracting restaurant data...");
+                YelpResponseFormatter formatter = new YelpResponseFormatter();
+                restaurants = formatter.extractRestaurantData(yelpResult.getRawResponse());
+                System.out.println("[EXTRACT] Extracted " + restaurants.size() + " restaurants");
+                
+                // Step 5.5: Enhance reasoning with both user-set preferences AND learned preferences
+                if (!restaurants.isEmpty()) {
+                    // For DMs, userId is the same as lineConversationId
+                    // For groups, we'll use the first user's preferences as representative
+                    enhanceReasoningWithPreferences(restaurants, lineConversationId, lineConversationId);
+                }
+            } else {
+                System.out.println("[EXTRACT] No raw response available for restaurant extraction");
+            }
+            
+            // Step 6: Clean up and split the formatted response into separate messages with photos
             ResponseWithPhotos response = cleanupAndSplitYelpResponse(yelpResult.getFormattedResponse());
             messages.addAll(response.messages);
             photosList.addAll(response.photos);
@@ -103,7 +128,7 @@ public class OpenAIService {
             e.printStackTrace();
         }
         
-        return new YelpResult(messages, photosList, newYelpConversationId);
+        return new YelpResult(messages, photosList, newYelpConversationId, restaurants);
     }
     
     /**
@@ -246,6 +271,147 @@ public class OpenAIService {
         return "";
     }
     
+    /**
+     * Enhance restaurant reasoning with BOTH user-set preferences AND learned preferences from graph DB
+     */
+    private void enhanceReasoningWithPreferences(List<RestaurantData> restaurants, String lineConversationId, String userId) {
+        try {
+            // Get user-set preferences (from /diet, /allergies, /favorites, /price commands)
+            UserPreferencesService.UserPreferences userPrefs = null;
+            if (userPreferencesService != null) {
+                userPrefs = userPreferencesService.getUserPreferences(userId);
+            }
+            
+            // Get learned preferences from graph database (from likes/dislikes)
+            ConversationAggregatesService.ConversationAggregates aggregates = null;
+            if (conversationAggregatesService != null) {
+                aggregates = conversationAggregatesService.getConversationAggregates(lineConversationId);
+            }
+            
+            if (userPrefs == null && aggregates == null) {
+                System.out.println("[REASONING] No preferences available (neither user-set nor learned)");
+                return;
+            }
+            
+            // Extract user-set preferences
+            List<String> favoriteCuisines = new ArrayList<>();
+            Integer preferredPrice = null;
+            List<String> dietRestrictions = new ArrayList<>();
+            List<String> allergies = new ArrayList<>();
+            
+            if (userPrefs != null) {
+                if (userPrefs.getFavoriteCuisines() != null) {
+                    favoriteCuisines.addAll(List.of(userPrefs.getFavoriteCuisines()));
+                }
+                preferredPrice = userPrefs.getPriceRange();
+                if (userPrefs.getDiet() != null) {
+                    dietRestrictions.addAll(List.of(userPrefs.getDiet()));
+                }
+                if (userPrefs.getAllergies() != null) {
+                    allergies.addAll(List.of(userPrefs.getAllergies()));
+                }
+            }
+            
+            // Extract learned preferences from graph DB
+            List<String> likedCuisines = new ArrayList<>();
+            Integer learnedPrice = null;
+            
+            if (aggregates != null) {
+                if (aggregates.getTopCuisines() != null) {
+                    likedCuisines.addAll(aggregates.getTopCuisines());
+                }
+                learnedPrice = aggregates.getAvgPrice();
+            }
+            
+            System.out.println("[REASONING] User-set: favorites=" + favoriteCuisines + ", price=" + preferredPrice + 
+                             ", diet=" + dietRestrictions + ", allergies=" + allergies);
+            System.out.println("[REASONING] Learned: liked=" + likedCuisines + ", avgPrice=" + learnedPrice);
+            
+            for (RestaurantData restaurant : restaurants) {
+                String originalReasoning = restaurant.getReasoning();
+                if (originalReasoning == null || originalReasoning.equals("Great option based on your preferences!")) {
+                    originalReasoning = "";
+                }
+                
+                StringBuilder enhanced = new StringBuilder();
+                
+                // Check cuisine matches (prioritize user-set favorites, then learned)
+                String cuisine = restaurant.getCuisine();
+                if (cuisine != null && !cuisine.isEmpty()) {
+                    String[] restaurantCuisines = cuisine.toLowerCase().split(",\\s*");
+                    
+                    // Check against user-set favorite cuisines
+                    boolean matchedFavorite = false;
+                    for (String rc : restaurantCuisines) {
+                        for (String fav : favoriteCuisines) {
+                            String favLower = fav.toLowerCase();
+                            if (rc.contains(favLower) || favLower.contains(rc)) {
+                                enhanced.append("✓ Matches your favorite ").append(fav).append(" cuisine! ");
+                                matchedFavorite = true;
+                                break;
+                            }
+                        }
+                        if (matchedFavorite) break;
+                    }
+                    
+                    // Check against learned liked cuisines (if no favorite match)
+                    if (!matchedFavorite && !likedCuisines.isEmpty()) {
+                        for (String rc : restaurantCuisines) {
+                            for (String liked : likedCuisines) {
+                                String likedLower = liked.toLowerCase();
+                                if (rc.contains(likedLower) || likedLower.contains(rc)) {
+                                    enhanced.append("✓ You've liked ").append(liked).append(" before! ");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Check price level (prioritize user-set, then learned)
+                String price = restaurant.getPrice();
+                if (price != null && !price.isEmpty()) {
+                    int priceLevel = price.length();
+                    Integer targetPrice = preferredPrice != null ? preferredPrice : learnedPrice;
+                    
+                    if (targetPrice != null && targetPrice > 0) {
+                        if (priceLevel == targetPrice) {
+                            String source = preferredPrice != null ? "preferred" : "typical";
+                            enhanced.append("✓ Matches your ").append(source).append(" $".repeat(targetPrice)).append(" range. ");
+                        } else if (priceLevel < targetPrice) {
+                            enhanced.append("More affordable than your usual spots. ");
+                        } else if (priceLevel == targetPrice + 1) {
+                            enhanced.append("Slightly pricier, but worth it! ");
+                        }
+                    }
+                }
+                
+                // Add dietary/allergy notes if applicable
+                if (!dietRestrictions.isEmpty()) {
+                    enhanced.append("Dietary: ").append(String.join(", ", dietRestrictions)).append(". ");
+                }
+                
+                // Add original reasoning
+                if (!originalReasoning.isEmpty()) {
+                    if (enhanced.length() > 0) enhanced.append("\n");
+                    enhanced.append(originalReasoning);
+                } else if (enhanced.length() == 0) {
+                    enhanced.append("Highly rated choice in the area!");
+                }
+                
+                String finalReasoning = enhanced.toString().trim();
+                restaurant.setReasoning(finalReasoning);
+                System.out.println("[REASONING] Enhanced for " + restaurant.getName() + ": " + finalReasoning);
+            }
+            
+            System.out.println("[REASONING] Enhanced reasoning for " + restaurants.size() + " restaurants");
+        } catch (Exception e) {
+            System.err.println("[REASONING] Error enhancing reasoning: " + e.getMessage());
+            e.printStackTrace();
+            // Don't fail the whole operation, just keep original reasoning
+        }
+    }
+    
     // ============================================================================
     // HYBRID APPROACH: OpenAI for DB Context Gathering + Direct Yelp MCP Call
     // ============================================================================
@@ -297,6 +463,7 @@ public class OpenAIService {
             ArrayNode tools = objectMapper.createArrayNode();
             tools.add(createUserPreferencesTool());
             tools.add(createChatHistorySearchTool());
+            tools.add(createConversationContextTool());
             request.set("tools", tools);
             request.put("tool_choice", "auto");
             
@@ -359,6 +526,12 @@ public class OpenAIService {
                             toolResult = callChatHistoryMCP(lineConversationId, searchQuery);
                             context.setHasHistorySearch(true);
                             context.setHistorySearchResult(toolResult);
+                            
+                        } else if ("get_conversation_context".equals(functionName)) {
+                            // Call Conversation Context MCP for group aggregate preferences
+                            System.out.println("[OpenAI] 📞 Calling get_conversation_context MCP for conversation: " + lineConversationId);
+                            toolResult = callConversationContextMCP(lineConversationId);
+                            // Add to context summary (could extend ContextResult if needed)
                         }
                         
                         // Add tool result to conversation
@@ -613,6 +786,105 @@ public class OpenAIService {
     }
     
     /**
+     * Creates tool definition for get_conversation_context MCP.
+     */
+    private ObjectNode createConversationContextTool() {
+        ObjectNode tool = objectMapper.createObjectNode();
+        tool.put("type", "function");
+        
+        ObjectNode function = objectMapper.createObjectNode();
+        function.put("name", "get_conversation_context");
+        function.put("description", 
+            "Retrieves conversation-level aggregate preferences from Neo4j graph data. " +
+            "Returns top cuisines liked by members, cuisines to avoid (strong dislikes), and average price level. " +
+            "Use this to understand group dining preferences and patterns based on past likes/dislikes.");
+        
+        ObjectNode parameters = objectMapper.createObjectNode();
+        parameters.put("type", "object");
+        parameters.set("properties", objectMapper.createObjectNode());
+        parameters.set("required", objectMapper.createArrayNode());
+        
+        function.set("parameters", parameters);
+        tool.set("function", function);
+        
+        return tool;
+    }
+    
+    /**
+     * Calls the Conversation Context MCP server via stdio (Node.js MCP SDK).
+     * 
+     * Request: { "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "get_conversation_context", "arguments": { "conversationId": "C123..." } } }
+     * Response: { "found": true, "topCuisines": ["Italian", "Japanese"], "strongAvoids": ["Indian"], "avgPrice": 2, "contextString": "..." }
+     */
+    private String callConversationContextMCP(String conversationId) {
+        System.out.println("[MCP] ========================================");
+        System.out.println("[MCP] Calling Conversation Context MCP for conversationId: " + conversationId);
+        System.out.println("[MCP] ========================================");
+        
+        try {
+            // Start MCP process
+            ProcessBuilder pb = new ProcessBuilder("node", "/app/conversation-context-mcp/index.js");
+            pb.environment().put("DB_HOST", "linebot-db");
+            pb.environment().put("DB_PORT", "5432");
+            pb.environment().put("DB_NAME", System.getenv("POSTGRES_DB"));
+            pb.environment().put("DB_USER", System.getenv("POSTGRES_USER"));
+            pb.environment().put("DB_PASSWORD", System.getenv("POSTGRES_PASSWORD"));
+            
+            System.out.println("[MCP] Starting Node.js MCP process...");
+            Process process = pb.start();
+            
+            // Write JSON-RPC request
+            ObjectNode request = objectMapper.createObjectNode();
+            request.put("jsonrpc", "2.0");
+            request.put("id", 1);
+            request.put("method", "tools/call");
+            
+            ObjectNode params = objectMapper.createObjectNode();
+            params.put("name", "get_conversation_context");
+            
+            ObjectNode args = objectMapper.createObjectNode();
+            args.put("conversationId", conversationId);
+            params.set("arguments", args);
+            
+            request.set("params", params);
+            
+            System.out.println("[MCP] Sending JSON-RPC request: " + request.toString());
+            
+            try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()))) {
+                writer.write(request.toString());
+                writer.newLine();
+                writer.flush();
+            }
+            
+            // Read JSON-RPC response
+            String response;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                response = reader.readLine();
+            }
+            
+            System.out.println("[MCP] Received response: " + response);
+            
+            process.destroy();
+            
+            if (response != null) {
+                JsonNode responseNode = objectMapper.readTree(response);
+                JsonNode result = responseNode.path("result");
+                JsonNode content = result.path("content").get(0);
+                String contextJson = content.path("text").asText();
+                System.out.println("[MCP] Conversation context retrieved: " + contextJson);
+                return contextJson;
+            }
+            
+        } catch (Exception e) {
+            System.err.println("[MCP] ❌ Error calling conversation context MCP: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        // Fallback to empty context
+        return "{\"found\": false, \"topCuisines\": [], \"strongAvoids\": [], \"avgPrice\": null}";
+    }
+    
+    /**
      * Builds an enhanced query for Yelp MCP by combining:
      * 1. Original user query
      * 2. User preferences from DB MCP (if gathered)
@@ -833,11 +1105,17 @@ public class OpenAIService {
         private final List<String> messages;
         private final List<List<String>> photos;
         private final String yelpConversationId;
+        private final List<RestaurantData> restaurants;
         
-        public YelpResult(List<String> messages, List<List<String>> photos, String yelpConversationId) {
+        public YelpResult(List<String> messages, List<List<String>> photos, String yelpConversationId, List<RestaurantData> restaurants) {
             this.messages = messages;
             this.photos = photos;
             this.yelpConversationId = yelpConversationId;
+            this.restaurants = restaurants;
+        }
+        
+        public YelpResult(List<String> messages, List<List<String>> photos, String yelpConversationId) {
+            this(messages, photos, yelpConversationId, new ArrayList<>());
         }
         
         public List<String> getMessages() {
@@ -850,6 +1128,10 @@ public class OpenAIService {
         
         public String getYelpConversationId() {
             return yelpConversationId;
+        }
+        
+        public List<RestaurantData> getRestaurants() {
+            return restaurants;
         }
     }
     

@@ -3,16 +3,24 @@ package com.ryanhideo.linebot.controller;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ryanhideo.linebot.config.LineProperties;
+import com.ryanhideo.linebot.model.RestaurantData;
 import com.ryanhideo.linebot.service.LineMessageService;
 import com.ryanhideo.linebot.service.MessageInsertService;
+import com.ryanhideo.linebot.service.Neo4jService;
+import com.ryanhideo.linebot.service.ConversationAggregatesService;
 import com.ryanhideo.linebot.util.FileLogger;
+import com.ryanhideo.linebot.util.FlexMessageBuilder;
 import com.ryanhideo.linebot.util.SignatureUtil;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 public class LineCallbackController {
@@ -26,13 +34,22 @@ public class LineCallbackController {
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
     private final MessageInsertService messageInsertService;
+    private final Neo4jService neo4jService;
+    private final ConversationAggregatesService conversationAggregatesService;
 
-    public LineCallbackController(LineProperties lineProps, LineMessageService messageService, MessageInsertService messageInsertService) {
+    public LineCallbackController(
+            LineProperties lineProps, 
+            LineMessageService messageService, 
+            MessageInsertService messageInsertService,
+            Neo4jService neo4jService,
+            ConversationAggregatesService conversationAggregatesService) {
         this.lineProps = lineProps;
         this.messageService = messageService;
         this.objectMapper = new ObjectMapper();
         this.restTemplate = new RestTemplate();
         this.messageInsertService = messageInsertService;
+        this.neo4jService = neo4jService;
+        this.conversationAggregatesService = conversationAggregatesService;
     }
 
     @PostMapping("/callback")
@@ -73,6 +90,13 @@ public class LineCallbackController {
 
     private void handleSingleEvent(JsonNode eventNode) {
         String type = eventNode.path("type").asText("");
+        
+        // Handle postback events for Like/Dislike buttons
+        if ("postback".equals(type)) {
+            handlePostbackEvent(eventNode);
+            return;
+        }
+        
         if (!"message".equals(type)) {
             return;
         }
@@ -121,8 +145,14 @@ public class LineCallbackController {
                 LineMessageService.MessageResult result = messageService.handleTextMessage(text, messageId, lineConversationId, userId, msgType, replyId);
                 
                 // Send the actual results via push message
-                if (!result.getReplies().isEmpty()) {
-                    sendPushMessage(lineConversationId, result.getReplies(), result.getPhotos(), messageId, lineConversationId, userId, msgType, replyId, result.getYelpConversationId());
+                if (!result.getReplies().isEmpty() || !result.getRestaurants().isEmpty()) {
+                    // If we have structured restaurant data, send as Flex Messages
+                    if (!result.getRestaurants().isEmpty()) {
+                        sendRestaurantsAsFlexMessages(lineConversationId, result.getRestaurants(), result.getReplies(), messageId, lineConversationId, userId, msgType, replyId, result.getYelpConversationId());
+                    } else {
+                        // Fallback to text messages for non-restaurant responses
+                        sendPushMessage(lineConversationId, result.getReplies(), result.getPhotos(), messageId, lineConversationId, userId, msgType, replyId, result.getYelpConversationId());
+                    }
                 }
             } else {
                 // Non-yelp commands use normal reply flow
@@ -134,6 +164,160 @@ public class LineCallbackController {
             }
         } catch (Exception e) {
             System.err.println("Error handling message: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void handlePostbackEvent(JsonNode eventNode) {
+        String replyToken = eventNode.path("replyToken").asText("");
+        String postbackData = eventNode.path("postback").path("data").asText("");
+        String userId = eventNode.path("source").path("userId").asText("");
+        String chattype = eventNode.path("source").path("type").asText("");
+        
+        String lineConversationId;
+        if (chattype.equals("group") || chattype.equals("room")) {
+            lineConversationId = eventNode.path("source").path("groupId").asText("");
+            if (lineConversationId.isEmpty()) {
+                lineConversationId = eventNode.path("source").path("roomId").asText("");
+            }
+        } else {
+            lineConversationId = eventNode.path("source").path("userId").asText("");
+        }
+
+        if (postbackData.isEmpty() || replyToken.isEmpty()) {
+            return;
+        }
+
+        try {
+            // Parse postback data: action=like&restaurantId=X&name=Y&cuisine=Z&price=P
+            Map<String, String> params = parsePostbackData(postbackData);
+            String action = params.get("action");
+            String restaurantId = params.get("restaurantId");
+            String name = params.get("name");
+            String cuisine = params.get("cuisine");
+            String priceStr = params.get("price");
+
+            if (action == null || restaurantId == null) {
+                System.err.println("Invalid postback data: missing action or restaurantId");
+                return;
+            }
+
+            // Keep price as string (e.g., "$$", "$$$") - don't parse as integer
+            String priceLevel = (priceStr != null && !priceStr.isEmpty()) ? priceStr : "";
+
+            // Record like or dislike in Neo4j
+            if ("like".equals(action)) {
+                neo4jService.recordLike(userId, restaurantId, name, cuisine, priceLevel);
+            } else if ("dislike".equals(action)) {
+                neo4jService.recordDislike(userId, restaurantId, name, cuisine, priceLevel);
+            } else {
+                System.err.println("Unknown postback action: " + action);
+                return;
+            }
+
+            // Update conversation aggregates
+            conversationAggregatesService.updateConversationAggregates(lineConversationId);
+
+            // Get the like/dislike ratio for this restaurant
+            Map<String, Integer> ratio = neo4jService.getRestaurantRatio(restaurantId);
+            int likes = ratio.getOrDefault("likes", 0);
+            int dislikes = ratio.getOrDefault("dislikes", 0);
+
+            // Send ratio message with restaurant name
+            String ratioMessage = String.format("%s\n👍 %d | 👎 %d", name, likes, dislikes);
+            sendReply(replyToken, List.of(ratioMessage), null, lineConversationId, userId, "postback", null, null);
+
+            System.out.println("Postback handled: " + action + " for restaurant " + restaurantId + " (ratio: 👍 " + likes + " | 👎 " + dislikes + ")");
+
+        } catch (Exception e) {
+            System.err.println("Error handling postback: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private Map<String, String> parsePostbackData(String postbackData) {
+        Map<String, String> params = new HashMap<>();
+        String[] pairs = postbackData.split("&");
+        for (String pair : pairs) {
+            String[] keyValue = pair.split("=", 2);
+            if (keyValue.length == 2) {
+                try {
+                    String key = URLDecoder.decode(keyValue[0], "UTF-8");
+                    String value = URLDecoder.decode(keyValue[1], "UTF-8");
+                    params.put(key, value);
+                } catch (UnsupportedEncodingException e) {
+                    System.err.println("Error decoding postback parameter: " + pair);
+                }
+            }
+        }
+        return params;
+    }
+
+    private void sendRestaurantsAsFlexMessages(String targetId, List<RestaurantData> restaurants, List<String> introMessages, String messageId, String lineConversationId, String userId, String msgType, String replyId, String yelpConversationId) {
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setBearerAuth(lineProps.getChannelAccessToken());
+
+            // Don't send intro messages when we have Flex Messages - just send the Flex Messages directly
+            
+            // Send each restaurant as a Flex Message
+            for (RestaurantData restaurant : restaurants) {
+                var root = objectMapper.createObjectNode();
+                root.put("to", targetId);
+                
+                var msgArray = objectMapper.createArrayNode();
+                
+                // Build Flex Message
+                String ratingStr = restaurant.getRating() > 0 ? restaurant.getRating() + "/5" : "No rating";
+                int priceLevel = restaurant.getPriceLevel();
+                String flexJson = FlexMessageBuilder.buildRestaurantFlexMessage(
+                    restaurant.getRestaurantId(),
+                    restaurant.getName(),
+                    ratingStr,
+                    restaurant.getPrice(),
+                    restaurant.getCuisine(),
+                    restaurant.getAddress(),
+                    restaurant.getPhone(),
+                    restaurant.getUrl(),
+                    restaurant.getImageUrl(),
+                    restaurant.getReasoning()
+                );
+                
+                if (flexJson != null) {
+                    JsonNode flexNode = objectMapper.readTree(flexJson);
+                    msgArray.add(flexNode);
+                }
+                
+                root.set("messages", msgArray);
+                
+                HttpEntity<String> entity = new HttpEntity<>(objectMapper.writeValueAsString(root), headers);
+                ResponseEntity<String> response = restTemplate.exchange(LINE_PUSH_URL, HttpMethod.POST, entity, String.class);
+                
+                if (!response.getStatusCode().is2xxSuccessful()) {
+                    System.err.println("LINE push error for Flex Message: " + response.getStatusCodeValue() + " " + response.getBody());
+                } else {
+                    System.out.println("Sent Flex Message for: " + restaurant.getName());
+                }
+                
+                // Insert record for tracking
+                messageInsertService.insertMessage(
+                    "Restaurant: " + restaurant.getName(), 
+                    false, 
+                    "flex-" + System.currentTimeMillis(), 
+                    lineConversationId, 
+                    "-1", 
+                    "flex", 
+                    replyId, 
+                    yelpConversationId
+                );
+                
+                // Small delay between restaurants
+                Thread.sleep(300);
+            }
+            
+        } catch (Exception e) {
+            System.err.println("Error sending Flex Messages: " + e.getMessage());
             e.printStackTrace();
         }
     }

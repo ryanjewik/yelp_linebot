@@ -43,6 +43,7 @@ public class YelpApiService {
             // Build request body
             ObjectNode requestBody = objectMapper.createObjectNode();
             requestBody.put("query", query);
+            requestBody.put("with_reasoning", true); // Request AI reasoning for recommendations
             
             if (chatId != null && !chatId.isEmpty()) {
                 requestBody.put("chat_id", chatId);
@@ -76,7 +77,7 @@ public class YelpApiService {
             
             if (!response.getStatusCode().is2xxSuccessful()) {
                 System.err.println("[YELP_API] Error: HTTP " + response.getStatusCodeValue());
-                return new YelpChatResult("Unable to fetch data from Yelp.", chatId);
+                return new YelpChatResult("Unable to fetch data from Yelp.", chatId, null);
             }
             
             // Parse response
@@ -84,16 +85,20 @@ public class YelpApiService {
             String returnedChatId = responseJson.path("chat_id").asText(chatId);
             
             System.out.println("[YELP_API] Returned Chat ID: " + returnedChatId);
+            System.out.println("[YELP_API] Response has 'entities': " + responseJson.has("entities"));
+            if (responseJson.has("entities") && responseJson.path("entities").isArray()) {
+                System.out.println("[YELP_API] Entities array size: " + responseJson.path("entities").size());
+            }
             
-            // Format response
+            // Format response (keep for backward compatibility)
             String formattedResponse = formatter.formatFusionAIResponse(responseJson);
             
-            return new YelpChatResult(formattedResponse, returnedChatId);
+            return new YelpChatResult(formattedResponse, returnedChatId, responseJson);
             
         } catch (Exception e) {
             System.err.println("[YELP_API] Exception: " + e.getMessage());
             e.printStackTrace();
-            return new YelpChatResult("Error calling Yelp API: " + e.getMessage(), chatId);
+            return new YelpChatResult("Error calling Yelp API: " + e.getMessage(), chatId, null);
         }
     }
     
@@ -103,10 +108,12 @@ public class YelpApiService {
     public static class YelpChatResult {
         private final String formattedResponse;
         private final String chatId;
+        private final JsonNode rawResponse;
         
-        public YelpChatResult(String formattedResponse, String chatId) {
+        public YelpChatResult(String formattedResponse, String chatId, JsonNode rawResponse) {
             this.formattedResponse = formattedResponse;
             this.chatId = chatId;
+            this.rawResponse = rawResponse;
         }
         
         public String getFormattedResponse() {
@@ -115,6 +122,10 @@ public class YelpApiService {
         
         public String getChatId() {
             return chatId;
+        }
+        
+        public JsonNode getRawResponse() {
+            return rawResponse;
         }
     }
 }

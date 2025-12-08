@@ -1,6 +1,7 @@
 package com.ryanhideo.linebot.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.ryanhideo.linebot.model.RestaurantData;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -409,5 +410,142 @@ public class YelpResponseFormatter {
         if (attributes.path(key).asBoolean(false)) {
             formattedAttributes.add(text);
         }
+    }
+    
+    /**
+     * Extracts structured restaurant data from Yelp Fusion AI response.
+     * This is used to build LINE Flex Messages with restaurant cards.
+     * 
+     * @param response Yelp Fusion AI API response JSON
+     * @return List of RestaurantData objects (max 3)
+     */
+    public List<RestaurantData> extractRestaurantData(JsonNode response) {
+        List<RestaurantData> restaurants = new ArrayList<>();
+        
+        if (!checkResponseFormat(response)) {
+            System.err.println("Invalid response format from Fusion AI.");
+            return restaurants;
+        }
+        
+        try {
+            // Get businesses from entities
+            List<JsonNode> businessNodes = new ArrayList<>();
+            JsonNode entities = response.path("entities");
+            if (entities.isArray()) {
+                for (JsonNode entity : entities) {
+                    JsonNode businessesNode = entity.path("businesses");
+                    if (businessesNode.isArray()) {
+                        businessesNode.forEach(businessNodes::add);
+                        break;
+                    }
+                }
+            }
+            
+            System.out.println("[FORMATTER] Extracting structured data for " + businessNodes.size() + " businesses");
+            
+            // Extract data from each business (limit to 3)
+            int maxBusinesses = 3;
+            int businessCount = Math.min(businessNodes.size(), maxBusinesses);
+            
+            for (int i = 0; i < businessCount; i++) {
+                JsonNode business = businessNodes.get(i);
+                RestaurantData data = new RestaurantData();
+                
+                System.out.println("[FORMATTER] Business " + (i+1) + " fields: " + business.fieldNames().next());
+                System.out.println("[FORMATTER] Has 'reasoning' field: " + business.has("reasoning"));
+                System.out.println("[FORMATTER] Has 'contextual_info' field: " + business.has("contextual_info"));
+                
+                // Basic info
+                data.setRestaurantId(business.path("id").asText(""));
+                data.setName(business.path("name").asText("Unknown Restaurant"));
+                data.setRating(business.path("rating").asDouble(0.0));
+                data.setPrice(business.path("price").asText(""));
+                
+                // Categories (cuisine type)
+                JsonNode categories = business.path("categories");
+                if (categories.isArray() && categories.size() > 0) {
+                    List<String> catTitles = new ArrayList<>();
+                    categories.forEach(cat -> {
+                        String title = cat.path("title").asText("");
+                        if (!title.isEmpty()) catTitles.add(title);
+                    });
+                    data.setCuisine(String.join(", ", catTitles));
+                }
+                
+                // Location
+                JsonNode location = business.path("location");
+                if (!location.isMissingNode()) {
+                    String formattedAddress = location.path("formatted_address").asText("");
+                    if (!formattedAddress.isEmpty()) {
+                        data.setAddress(formattedAddress.replace("\\n", ", "));
+                    }
+                }
+                
+                // Contact
+                data.setPhone(business.path("phone").asText(""));
+                data.setUrl(business.path("url").asText(""));
+                
+                // Photos
+                List<String> photoUrls = new ArrayList<>();
+                JsonNode contextualInfo = business.path("contextual_info");
+                JsonNode photos = contextualInfo.path("photos");
+                if (photos.isArray() && photos.size() > 0) {
+                    for (JsonNode photo : photos) {
+                        String photoUrl = photo.path("original_url").asText("");
+                        if (!photoUrl.isEmpty()) {
+                            photoUrls.add(photoUrl);
+                        }
+                    }
+                }
+                
+                // Set main image (first photo)
+                if (!photoUrls.isEmpty()) {
+                    data.setImageUrl(photoUrls.get(0));
+                    // Set additional photos (excluding first)
+                    if (photoUrls.size() > 1) {
+                        data.setAdditionalPhotos(photoUrls.subList(1, photoUrls.size()));
+                    }
+                } else {
+                    // Fallback to a placeholder or empty
+                    data.setImageUrl("https://via.placeholder.com/800x600?text=No+Image");
+                    data.setAdditionalPhotos(new ArrayList<>());
+                }
+                
+                // Extract reasoning from AI response
+                JsonNode reasoning = business.path("reasoning");
+                if (!reasoning.isMissingNode() && !reasoning.asText().isEmpty()) {
+                    String reasoningText = reasoning.asText()
+                        .replace("[[HIGHLIGHT]]", "")
+                        .replace("[[ENDHIGHLIGHT]]", "");
+                    data.setReasoning(reasoningText);
+                } else {
+                    // Fallback: use review snippet or summary
+                    String reviewSnippet = contextualInfo.path("review_snippet").asText("");
+                    if (!reviewSnippet.isEmpty()) {
+                        data.setReasoning(reviewSnippet
+                            .replace("[[HIGHLIGHT]]", "")
+                            .replace("[[ENDHIGHLIGHT]]", ""));
+                    } else {
+                        JsonNode summaries = business.path("summaries");
+                        String summary = summaries.path("short").asText("");
+                        if (!summary.isEmpty()) {
+                            data.setReasoning(summary);
+                        } else {
+                            data.setReasoning("Great option based on your preferences!");
+                        }
+                    }
+                }
+                
+                restaurants.add(data);
+            }
+            
+            System.out.println("[FORMATTER] Extracted " + restaurants.size() + " restaurant data objects");
+            
+        } catch (Exception e) {
+            System.err.println("[FORMATTER] Error extracting restaurant data: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return restaurants;
     }
 }

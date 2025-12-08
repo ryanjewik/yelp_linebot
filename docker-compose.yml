@@ -63,6 +63,10 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_PORT=${POSTGRES_PORT}
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USERNAME=${NEO4J_USERNAME}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_DATABASE=${NEO4J_DATABASE}
     expose:
       - "8000"
     volumes:
@@ -70,6 +74,7 @@ services:
       - ./linebot-bridge/application.log:/app/application.log
       - ./mcps/user-prefs-mcp:/app/user-prefs-mcp:ro
       - ./mcps/chat-history-mcp:/app/chat-history-mcp:ro
+      - ./mcps/conversation-context-mcp:/app/conversation-context-mcp:ro
     depends_on:
       linebot-db:
         condition: service_healthy

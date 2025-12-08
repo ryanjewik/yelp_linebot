@@ -1,5 +1,6 @@
 package com.ryanhideo.linebot.service;
 
+import com.ryanhideo.linebot.model.RestaurantData;
 import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -12,11 +13,17 @@ public class LineMessageService {
         private final List<String> replies;
         private final List<List<String>> photos;
         private final String yelpConversationId;
+        private final List<RestaurantData> restaurants;
         
-        public MessageResult(List<String> replies, List<List<String>> photos, String yelpConversationId) {
+        public MessageResult(List<String> replies, List<List<String>> photos, String yelpConversationId, List<RestaurantData> restaurants) {
             this.replies = replies;
             this.photos = photos;
             this.yelpConversationId = yelpConversationId;
+            this.restaurants = restaurants;
+        }
+        
+        public MessageResult(List<String> replies, List<List<String>> photos, String yelpConversationId) {
+            this(replies, photos, yelpConversationId, new ArrayList<>());
         }
         
         public List<String> getReplies() {
@@ -29,6 +36,10 @@ public class LineMessageService {
         
         public String getYelpConversationId() {
             return yelpConversationId;
+        }
+        
+        public List<RestaurantData> getRestaurants() {
+            return restaurants;
         }
     }
 
@@ -184,7 +195,7 @@ public class LineMessageService {
                 replies.addAll(result.getMessages());
                 yelpConversationId = result.getChatId();
                 messageInsertService.insertMessage(rawText, yelpCall, messageId, lineConversationI, userId, msgType, replyId, yelpConversationId);
-                return new MessageResult(result.getMessages(), result.getPhotos(), yelpConversationId);
+                return new MessageResult(result.getMessages(), result.getPhotos(), yelpConversationId, result.getRestaurants());
             }
         }
     

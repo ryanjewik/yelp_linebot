@@ -11,10 +11,12 @@ The Yelp LINE Bot is a conversational assistant that lives in your LINE messagin
 ### Key Features
 
 - 🍽️ **Smart Restaurant Discovery**: Natural language queries like "find good vegan sushi in SF under $30"
-- 👥 **Group Preferences**: Automatically considers dietary restrictions and preferences of all group members
-- 💬 **Conversation Memory**: Recalls past recommendations and learns from your history
-- 🎯 **Personalization**: Remembers your dietary needs, allergies, favorite cuisines, and budget
-- 📸 **Rich Responses**: Restaurant photos, ratings, hours, amenities, and direct Yelp links
+- 👥 **Group Preferences**: Automatically aggregates preferences from all group members' likes/dislikes
+- 💬 **Conversation Memory**: Recalls past recommendations and learns from your interaction history
+- 🎯 **Dual Personalization**: Combines explicit preferences (diet, allergies, favorites) with learned taste patterns (likes/dislikes)
+- 💾 **Neo4j Graph Database**: Stores user preferences, restaurant likes/dislikes, and relationship patterns
+- 🎴 **Rich Flex Messages**: Beautiful restaurant cards with images, ratings, and interactive Like/Dislike buttons
+- 📊 **Real-time Preference Learning**: Every like/dislike refines future recommendations
 - 🌐 **Interactive Landing Page**: Try the bot with a live demo chat before adding on LINE
 
 ## 🏗️ Architecture
@@ -37,21 +39,23 @@ The Yelp LINE Bot is a conversational assistant that lives in your LINE messagin
 │              │      │   (linebot-bridge)          │
 │  React 18    │      │                             │
 │  + Vite      │      │  • LINE Webhook Handler     │
-│  + Tailwind  │      │  • Yelp API Integration     │
+│  + Tailwind  │      │  • Yelp Fusion AI API v2    │
 │              │      │  • OpenAI GPT-4o Service    │
-│  Demo Chat   │      │  • MCP Client Service       │
-│  Component   │      │  • User Preferences         │
+│  Demo Chat   │      │  • Flex Message Builder     │
+│  Component   │      │  • Neo4j Service            │
 └──────────────┘      └─────────────────────────────┘
                                  │
-                    ┌────────────┼────────────┐
-                    ▼            ▼            ▼
-            ┌─────────────┐  ┌──────┐  ┌──────────┐
-            │ PostgreSQL  │  │ MCP  │  │ MCP      │
-            │             │  │ User │  │ Chat     │
-            │ • Users     │  │ Prefs│  │ History  │
-            │ • Messages  │  │ (Node│  │ (Node.js)│
-            │ • Convos    │  │ .js) │  │          │
-            └─────────────┘  └──────┘  └──────────┘
+                    ┌────────────┼────────────┬──────────┐
+                    ▼            ▼            ▼          ▼
+            ┌─────────────┐  ┌──────┐  ┌──────────┐  ┌─────────┐
+            │ PostgreSQL  │  │ MCP  │  │ MCP      │  │ Neo4j   │
+            │             │  │ User │  │ Chat     │  │ Aura    │
+            │ • Users     │  │ Prefs│  │ History  │  │         │
+            │ • Messages  │  │(Node)│  │ (Node.js)│  │ • Users │
+            │ • Convos    │  └──────┘  └──────────┘  │ • Rests │
+            │ • Aggregates│                           │ • LIKES │
+            └─────────────┘                           │ • DISLIKES
+                                                      └─────────┘
 ```
 
 ### Technology Stack
@@ -64,7 +68,8 @@ The Yelp LINE Bot is a conversational assistant that lives in your LINE messagin
 
 **Backend**:
 - Spring Boot 3.5.9 (Java 17)
-- PostgreSQL 18
+- PostgreSQL 18 (conversation data & aggregates cache)
+- Neo4j Aura (user preferences graph database)
 - RestTemplate for HTTP clients
 - Jackson for JSON processing
 
@@ -83,13 +88,29 @@ The Yelp LINE Bot is a conversational assistant that lives in your LINE messagin
 ## 💬 User Commands
 
 ### Restaurant Search
+Simply ask in natural language! No commands needed:
 ```
-/yelp <query>
+"Can you recommend a good sushi place in San Diego?"
+"Find me cheap Mexican food near downtown"
+"Where should we go for a romantic dinner anniversary?"
 ```
-Examples:
-- `/yelp vegan ramen in Tokyo`
-- `/yelp cheap mexican food near me`
-- `/yelp romantic restaurants for anniversary dinner`
+
+The bot will:
+- Show restaurant recommendations as rich Flex Message cards
+- Include AI reasoning based on your group's actual taste preferences
+- Provide Like 👍 and Dislike 👎 buttons to refine future recommendations
+
+### Interactive Buttons
+After receiving recommendations:
+- **👍 Like**: Records your preference in Neo4j, updates group aggregates
+- **👎 Dislike**: Records avoidance, prevents similar recommendations
+- **🔗 View on Yelp**: Opens restaurant page in Yelp app/web
+
+Each interaction shows live counts:
+```
+Cesarina
+👍 2 | 👎 1
+```
 
 ### Preference Management
 ```
@@ -114,70 +135,78 @@ Examples:
 - Signature validation ensures request authenticity
 
 ### 2. Context Gathering (OpenAI + MCP)
-For `/yelp` queries, the system:
+For restaurant queries, the system:
 - Launches OpenAI GPT-4o with function calling
 - GPT-4o can call MCP servers via subprocess:
   - **User Preferences MCP**: Retrieves dietary restrictions, allergies, price range, and favorite cuisines for all group members
   - **Chat History MCP**: Searches past conversations if user references previous recommendations
 
-### 3. Yelp API Integration
-- Extracted context (location, cuisine, preferences) is sent to Yelp Fusion AI API
-- Yelp returns restaurant matches with business details
+### 3. Yelp API Integration with AI Reasoning
+- Extracted context (location, cuisine, preferences) is sent to Yelp Fusion AI API v2
+- Uses `with_reasoning: true` parameter to get AI explanations for each recommendation
+- Yelp returns up to 3 restaurant matches with business details and reasoning
 - Conversation ID is tracked for follow-up queries
 
-### 4. Response Formatting
-- Restaurant data is formatted into rich text messages
-- Includes: name, rating, price level, address, phone, hours, amenities
-- Photos are attached when available
-- Messages are sent back to LINE via reply or push API
+### 4. Dual-Source Preference Enhancement
+The system combines **two types of preferences** for maximum personalization:
 
-### 5. Database Persistence
-- Messages are stored in PostgreSQL for history
-- User preferences are updated with each `/diet`, `/allergies`, etc. command
-- Conversation context is maintained across sessions
+**User-Set Preferences** (explicit from commands):
+- Retrieves from PostgreSQL: dietary restrictions, allergies, favorite cuisines, price range
+- Set via `/diet`, `/allergies`, `/favorites`, `/price` commands
+- Represents what users explicitly tell the bot they want
 
-## 📁 Project Structure
+**Learned Preferences** (implicit from behavior):
+- Queries Neo4j for conversation aggregates: liked cuisines, average price level
+- Built from Like/Dislike button interactions over time
+- Represents actual taste patterns from real choices
 
-```
-yelp_linebot/
-├── landing-page/              # React landing page
-│   ├── src/
-│   │   ├── components/
-│   │   │   └── DemoChat.tsx   # Interactive demo
-│   │   ├── App.tsx
-│   │   └── main.tsx
-│   ├── Dockerfile
-│   └── nginx.conf
-│
-├── linebot-bridge/            # Spring Boot backend
-│   ├── src/main/java/com/ryanhideo/linebot/
-│   │   ├── controller/
-│   │   │   ├── LineCallbackController.java
-│   │   │   └── DemoChatController.java
-│   │   ├── service/
-│   │   │   ├── LineMessageService.java
-│   │   │   ├── YelpApiService.java
-│   │   │   ├── OpenAIService.java
-│   │   │   ├── McpClientService.java
-│   │   │   └── UserPreferencesService.java
-│   │   ├── config/
-│   │   └── util/
-│   ├── Dockerfile
-│   └── pom.xml
-│
-├── mcps/                      # MCP Servers (Node.js)
-│   ├── user-prefs-mcp/        # User preferences retrieval
-│   └── chat-history-mcp/      # Conversation history search
-│
-├── nginx/                     # Reverse proxy configuration
-│   ├── nginx.conf
-│   └── ssl/
-│       ├── origin-cert.pem    # Cloudflare Origin Certificate
-│       └── origin-key.pem
-│
-├── docker-compose.yml         # Container orchestration
-└── README.md
-```
+**Priority Logic**:
+- Cuisine matches: Checks user-set favorites FIRST → then learned likes
+- Price alignment: Uses explicit price preference → falls back to learned average
+- Combines both sources in reasoning:
+  - "✓ Matches your favorite Japanese cuisine!" (explicit)
+  - "✓ You've liked Italian before!" (learned)
+  - "✓ Matches your preferred $$ range" (explicit)
+  - "Dietary: vegan, gluten-free" (explicit)
+
+### 5. Rich Flex Message Generation
+- Builds LINE Flex Messages with restaurant cards
+- Each card includes:
+  - Hero image (restaurant photo)
+  - Name, rating ⭐, price level, cuisine 🍽️
+  - Address 📍, phone 📞
+  - Enhanced reasoning with preference indicators
+  - "View on Yelp" link button
+  - Like 👍 (green) and Dislike 👎 (Yelp red) buttons
+- Messages are sent via LINE Push API
+
+### 6. Graph Database Updates (Neo4j)
+When users click Like/Dislike:
+- Records relationship in Neo4j: `(User)-[:LIKES|DISLIKES]->(Restaurant)`
+- Stores restaurant metadata: cuisine, price level, name
+- Updates PostgreSQL conversation aggregates cache
+- Queries Neo4j for like/dislike counts
+- Sends ratio message: `"Cesarina\n👍 2 | 👎 1"`
+
+### 7. Preference Aggregation & Storage
+**PostgreSQL** (explicit preferences):
+- Stores user-set preferences per user: diet, allergies, favorite cuisines, price range
+- Updated via `/diet`, `/allergies`, `/favorites`, `/price` commands
+- Retrieved instantly for reasoning enhancement
+
+**Neo4j Graph Database** (learned preferences):
+- Stores: `(User)-[:LIKES|DISLIKES]->(Restaurant)` relationships
+- Restaurant nodes contain: cuisine, price level, name
+- Aggregates computed on-demand:
+  - Top cuisines (from LIKES relationships across all group members)
+  - Strong avoids (from DISLIKES relationships)
+  - Average price level (from liked restaurants)
+
+**Conversation Aggregates Cache** (PostgreSQL):
+- Caches Neo4j aggregate results per conversation
+- Updates after each Like/Dislike action
+- Provides fast access to group-wide learned preferences
+
 
 ## 🔐 Security Features
 

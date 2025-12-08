@@ -1,0 +1,21 @@
+{
+  "name": "conversation-context-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for conversation-level aggregates (top cuisines, strong avoids, avg price) from Neo4j graph data",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "typescript": "^5.6.0"
+  }
+}

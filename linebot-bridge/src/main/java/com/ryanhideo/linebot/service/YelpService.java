@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.ryanhideo.linebot.config.YelpProperties;
 import com.ryanhideo.linebot.config.PostgresProperties;
+import com.ryanhideo.linebot.model.RestaurantData;
 import com.ryanhideo.linebot.util.FileLogger;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
@@ -64,6 +65,7 @@ public class YelpService {
             OpenAIService.YelpResult result = openAIService.callOpenAIWithYelpTool(query, existingYelpConvId, chatHistory, lineConversationId);
             messages = result.getMessages();
             List<List<String>> photos = result.getPhotos();
+            List<RestaurantData> restaurants = result.getRestaurants();
             yelpConversationId = result.getYelpConversationId();
             
             // Update conversation table with new/updated yelpConversationId
@@ -72,14 +74,14 @@ public class YelpService {
                 updateYelpSession(lineConversationId, yelpConversationId);
             }
             
-            return new YelpChatResult(messages, photos, yelpConversationId);
+            return new YelpChatResult(messages, photos, yelpConversationId, restaurants);
 
         } catch (Exception e) {
             messages.add("Error calling OpenAI with Yelp tool: " + e.getMessage());
             e.printStackTrace();
             List<List<String>> emptyPhotos = new ArrayList<>();
             emptyPhotos.add(new ArrayList<>());
-            return new YelpChatResult(messages, emptyPhotos, yelpConversationId);
+            return new YelpChatResult(messages, emptyPhotos, yelpConversationId, new ArrayList<>());
         }
     }
 
@@ -212,11 +214,13 @@ public class YelpService {
         private final List<String> messages;
         private final List<List<String>> photos;
         private final String chatId;
+        private final List<RestaurantData> restaurants;
         
-        public YelpChatResult(List<String> messages, List<List<String>> photos, String chatId) {
+        public YelpChatResult(List<String> messages, List<List<String>> photos, String chatId, List<RestaurantData> restaurants) {
             this.messages = messages;
             this.photos = photos;
             this.chatId = chatId;
+            this.restaurants = restaurants;
         }
         
         public List<String> getMessages() {
@@ -229,6 +233,10 @@ public class YelpService {
         
         public String getChatId() {
             return chatId;
+        }
+        
+        public List<RestaurantData> getRestaurants() {
+            return restaurants;
         }
     }
 }
