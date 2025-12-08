@@ -68,6 +68,29 @@ public class OpenAIService {
         String newYelpConversationId = yelpConversationId;
         
         try {
+            // Step 0: Check if this is an informational question about previous recommendations
+            if (yelpConversationId != null && !yelpConversationId.isEmpty()) {
+                String queryType = classifyQueryType(userQuery, chatHistory);
+                if ("INFORMATIONAL".equals(queryType)) {
+                    System.out.println("[QUERY TYPE] Informational question detected - using Yelp conversational mode");
+                    // Let Yelp Fusion AI handle the follow-up question conversationally
+                    YelpApiService.YelpChatResult yelpResult = yelpApiService.queryYelpAI(
+                        userQuery,
+                        yelpConversationId,
+                        null,
+                        null
+                    );
+                    
+                    if (yelpResult.getChatId() != null) {
+                        newYelpConversationId = yelpResult.getChatId();
+                    }
+                    
+                    // Return the conversational response without recommendation extraction
+                    ResponseWithPhotos response = cleanupAndSplitYelpResponse(yelpResult.getFormattedResponse());
+                    return new YelpResult(response.messages, response.photos, newYelpConversationId);
+                }
+            }
+            
             // Step 1: Gather context from DB MCPs using OpenAI (user preferences, specific history)
             ContextResult context = gatherContextWithOpenAI(userQuery, lineConversationId, yelpConversationId);
             
@@ -409,6 +432,98 @@ public class OpenAIService {
             System.err.println("[REASONING] Error enhancing reasoning: " + e.getMessage());
             e.printStackTrace();
             // Don't fail the whole operation, just keep original reasoning
+        }
+    }
+    
+    /**
+     * Classifies if the query is a new recommendation request or informational question
+     * about previous recommendations.
+     * 
+     * @param userQuery The user's query
+     * @param chatHistory Recent conversation history
+     * @return "INFORMATIONAL" if asking about previous recommendations, "RECOMMENDATION" otherwise
+     */
+    private String classifyQueryType(String userQuery, String chatHistory) {
+        try {
+            String systemPrompt = """
+                You are a query classifier for a restaurant recommendation bot. Your job is to determine if the user is:
+                
+                1. INFORMATIONAL: Asking a question about previously recommended restaurants (e.g., "does it have vegan options?", 
+                   "what are their hours?", "do they have parking?", "is it wheelchair accessible?")
+                   
+                2. RECOMMENDATION: Requesting new restaurant recommendations (e.g., "find me a restaurant", "where should I eat?", 
+                   "recommend something", "I want Italian food")
+                
+                Key indicators for INFORMATIONAL:
+                - Uses pronouns referring to a restaurant: "it", "they", "their", "the place"
+                - Asks about specific attributes: hours, menu items, accessibility, payment methods, parking
+                - References previously mentioned restaurant by name
+                - Question words: "does", "can", "is", "are", "do", "what about"
+                
+                Key indicators for RECOMMENDATION:
+                - Uses action verbs: "find", "recommend", "suggest", "look for"
+                - Specifies new criteria: cuisine type, location, price range
+                - No reference to previous restaurants
+                
+                Respond with ONLY one word: "INFORMATIONAL" or "RECOMMENDATION"
+                """;
+            
+            String userPrompt = String.format("""
+                Chat History (last few messages):
+                %s
+                
+                Current User Query: %s
+                
+                Classification:""", 
+                chatHistory != null && !chatHistory.isEmpty() ? chatHistory : "No previous context",
+                userQuery
+            );
+            
+            // Build request JSON
+            ObjectNode requestBody = objectMapper.createObjectNode();
+            requestBody.put("model", openAIProperties.getModel());
+            requestBody.put("temperature", 0.1);
+            requestBody.put("max_tokens", 10);
+            
+            ArrayNode messages = objectMapper.createArrayNode();
+            ObjectNode systemMsg = objectMapper.createObjectNode();
+            systemMsg.put("role", "system");
+            systemMsg.put("content", systemPrompt);
+            messages.add(systemMsg);
+            
+            ObjectNode userMsg = objectMapper.createObjectNode();
+            userMsg.put("role", "user");
+            userMsg.put("content", userPrompt);
+            messages.add(userMsg);
+            
+            requestBody.set("messages", messages);
+            
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setBearerAuth(openAIProperties.getApiKey());
+            
+            HttpEntity<String> entity = new HttpEntity<>(requestBody.toString(), headers);
+            ResponseEntity<String> response = restTemplate.exchange(
+                OPENAI_API_URL,
+                HttpMethod.POST,
+                entity,
+                String.class
+            );
+            
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                System.err.println("[CLASSIFY] Error: " + response.getStatusCodeValue());
+                return "RECOMMENDATION"; // Default to recommendation on error
+            }
+            
+            JsonNode root = objectMapper.readTree(response.getBody());
+            String classification = root.path("choices").get(0)
+                .path("message").path("content").asText().trim().toUpperCase();
+            
+            System.out.println("[CLASSIFY] Query type: " + classification);
+            return classification.contains("INFORMATIONAL") ? "INFORMATIONAL" : "RECOMMENDATION";
+        } catch (Exception e) {
+            System.err.println("[CLASSIFY] Error classifying query: " + e.getMessage());
+            return "RECOMMENDATION"; // Default to recommendation on error
         }
     }
     
