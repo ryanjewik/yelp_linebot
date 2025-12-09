@@ -205,11 +205,11 @@ public class LineCallbackController {
             // Keep price as string (e.g., "$$", "$$$") - don't parse as integer
             String priceLevel = (priceStr != null && !priceStr.isEmpty()) ? priceStr : "";
 
-            // Record like or dislike in Neo4j
+            // Record like or dislike in Neo4j with conversationId
             if ("like".equals(action)) {
-                neo4jService.recordLike(userId, restaurantId, name, cuisine, priceLevel);
+                neo4jService.recordLike(userId, restaurantId, name, cuisine, priceLevel, lineConversationId);
             } else if ("dislike".equals(action)) {
-                neo4jService.recordDislike(userId, restaurantId, name, cuisine, priceLevel);
+                neo4jService.recordDislike(userId, restaurantId, name, cuisine, priceLevel, lineConversationId);
             } else {
                 System.err.println("Unknown postback action: " + action);
                 return;
@@ -218,8 +218,8 @@ public class LineCallbackController {
             // Update conversation aggregates
             conversationAggregatesService.updateConversationAggregates(lineConversationId);
 
-            // Get the like/dislike ratio for this restaurant
-            Map<String, Integer> ratio = neo4jService.getRestaurantRatio(restaurantId);
+            // Get the like/dislike ratio for this restaurant within this conversation
+            Map<String, Integer> ratio = neo4jService.getRestaurantRatio(restaurantId, lineConversationId);
             int likes = ratio.getOrDefault("likes", 0);
             int dislikes = ratio.getOrDefault("dislikes", 0);
 

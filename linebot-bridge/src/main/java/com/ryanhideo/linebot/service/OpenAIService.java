@@ -85,9 +85,28 @@ public class OpenAIService {
                         newYelpConversationId = yelpResult.getChatId();
                     }
                     
-                    // Return the conversational response without recommendation extraction
-                    ResponseWithPhotos response = cleanupAndSplitYelpResponse(yelpResult.getFormattedResponse());
-                    return new YelpResult(response.messages, response.photos, newYelpConversationId);
+                    // Return ONLY the answer text, strip out all business listings and technical sections
+                    String textResponse = yelpResult.getFormattedResponse();
+                    
+                    // Extract only the introduction/answer text before any business listings
+                    int firstBusinessIndex = textResponse.indexOf("## Business");
+                    if (firstBusinessIndex > 0) {
+                        textResponse = textResponse.substring(0, firstBusinessIndex).trim();
+                    }
+                    
+                    // Clean up any remaining technical sections
+                    textResponse = textResponse.replaceAll("(?s)^#.*?## Introduction\\s*", "");
+                    textResponse = textResponse.replaceAll("(?m)^##\\s*Chat ID.*", "");
+                    textResponse = textResponse.replaceAll("(?m)^##\\s*Introduction\\s*", "");
+                    textResponse = textResponse.replaceAll("(?m)^\\s*[A-Za-z][A-Za-z0-9_-]{15,}\\s*$", "");
+                    textResponse = textResponse.replaceAll("\\n{3,}", "\n\n");
+                    textResponse = textResponse.trim();
+                    
+                    if (!textResponse.isEmpty()) {
+                        messages.add(textResponse);
+                        photosList.add(new ArrayList<>()); // No photos for informational responses
+                    }
+                    return new YelpResult(messages, photosList, newYelpConversationId);
                 }
             }
             
@@ -109,7 +128,19 @@ public class OpenAIService {
             // Step 3: Build enhanced query with all context for new search
             String enhancedQuery = buildEnhancedQuery(userQuery, context, chatHistory);
             
+            // Step 3.5: Determine if we should use with_reasoning (structured restaurant data)
+            // with_reasoning=true: Only for restaurant-specific queries (returns structured data)
+            // with_reasoning=false: For general business queries (activities, attractions, shops, etc.)
+            boolean isRestaurantQuery = isRestaurantFocusedQuery(userQuery);
+            
+            // Step 3.6: Rephrase "activity" queries into business/venue queries for Yelp
+            // Yelp works better with concrete business types than abstract "activities"
+            if (!isRestaurantQuery) {
+                enhancedQuery = rephraseActivityQueryForYelp(enhancedQuery);
+            }
+            
             System.out.println("Enhanced query for Yelp API:\n" + enhancedQuery);
+            System.out.println("[QUERY TYPE] Restaurant-focused: " + isRestaurantQuery + " (with_reasoning=" + isRestaurantQuery + ")");
             
             // Step 4: Direct call to Yelp Fusion AI API via Java service
             // Let Yelp ask for location naturally in conversation
@@ -117,34 +148,59 @@ public class OpenAIService {
                 enhancedQuery,
                 yelpConversationId,
                 null,  // Let Yelp extract location from query or ask user
-                null   // Let Yelp extract location from query or ask user
+                null,  // Let Yelp extract location from query or ask user
+                isRestaurantQuery  // Only use with_reasoning for restaurant queries
             );
             
             if (yelpResult.getChatId() != null) {
                 newYelpConversationId = yelpResult.getChatId();
             }
             
-            // Step 5: Extract structured restaurant data from raw response
+            // Step 5: Extract structured business data from response
+            // YelpResponseFormatter handles both with_reasoning=true and with_reasoning=false
+            // It extracts from entities array which is present in both cases
             if (yelpResult.getRawResponse() != null) {
-                System.out.println("[EXTRACT] Raw response exists, extracting restaurant data...");
+                System.out.println("[EXTRACT] Extracting business data from Yelp response...");
                 YelpResponseFormatter formatter = new YelpResponseFormatter();
                 restaurants = formatter.extractRestaurantData(yelpResult.getRawResponse());
-                System.out.println("[EXTRACT] Extracted " + restaurants.size() + " restaurants");
+                System.out.println("[EXTRACT] Extracted " + restaurants.size() + " businesses");
                 
-                // Step 5.5: Enhance reasoning with both user-set preferences AND learned preferences
-                if (!restaurants.isEmpty()) {
-                    // For DMs, userId is the same as lineConversationId
-                    // For groups, we'll use the first user's preferences as representative
+                // Step 5.5: Enhance reasoning with preferences (only for restaurant queries)
+                if (isRestaurantQuery && !restaurants.isEmpty()) {
                     enhanceReasoningWithPreferences(restaurants, lineConversationId, lineConversationId);
                 }
             } else {
-                System.out.println("[EXTRACT] No raw response available for restaurant extraction");
+                System.out.println("[EXTRACT] No raw response available for extraction");
             }
             
             // Step 6: Clean up and split the formatted response into separate messages with photos
-            ResponseWithPhotos response = cleanupAndSplitYelpResponse(yelpResult.getFormattedResponse());
-            messages.addAll(response.messages);
-            photosList.addAll(response.photos);
+            // Only include text messages if we DON'T have structured restaurant data
+            // When we have restaurants, we'll send Flex Messages instead of text
+            if (restaurants.isEmpty()) {
+                System.out.println("[RESPONSE] No structured restaurants found, using text format");
+                ResponseWithPhotos response = cleanupAndSplitYelpResponse(yelpResult.getFormattedResponse());
+                messages.addAll(response.messages);
+                photosList.addAll(response.photos);
+            } else {
+                System.out.println("[RESPONSE] Using Flex Message format for " + restaurants.size() + " restaurants");
+                // Extract only the introduction text (before restaurant listings) if present
+                String formattedResponse = yelpResult.getFormattedResponse();
+                int firstBusinessIndex = formattedResponse.indexOf("## Business");
+                if (firstBusinessIndex > 0) {
+                    String intro = formattedResponse.substring(0, firstBusinessIndex).trim();
+                    // Clean up intro
+                    intro = intro.replaceAll("(?s)^#.*?## Introduction\\s*", "");
+                    intro = intro.replaceAll("(?m)^##\\s*Chat ID.*", "");
+                    intro = intro.replaceAll("(?m)^\\s*[A-Za-z][A-Za-z0-9_-]{15,}\\s*$", "");
+                    intro = intro.replaceAll("\\n{3,}", "\n\n");
+                    intro = intro.trim();
+                    
+                    if (!intro.isEmpty()) {
+                        messages.add(intro);
+                        photosList.add(new ArrayList<>());
+                    }
+                }
+            }
             
         } catch (Exception e) {
             messages.add("Error calling Yelp: " + e.getMessage());
@@ -292,6 +348,111 @@ public class OpenAIService {
             return matcher.group(1).trim();
         }
         return "";
+    }
+    
+    /**
+     * Extract business data from Yelp's formatted text response (for general queries without with_reasoning)
+     */
+    private List<RestaurantData> extractBusinessesFromFormattedResponse(String formattedResponse) {
+        List<RestaurantData> businesses = new ArrayList<>();
+        
+        try {
+            // Look for business entries - format is:
+            // Business Name
+            // ⭐ 4.5/5 (123 reviews) • $$
+            // 🎮 Category1, Category2
+            // 📍 Address
+            String[] lines = formattedResponse.split("\n");
+            RestaurantData currentBusiness = null;
+            
+            for (int i = 0; i < lines.length; i++) {
+                String line = lines[i].trim();
+                
+                // Check if next line starts with rating (⭐) - if so, current line is business name
+                if (i + 1 < lines.length && lines[i + 1].trim().startsWith("⭐")) {
+                    // Save previous business if exists
+                    if (currentBusiness != null && currentBusiness.getName() != null && !currentBusiness.getName().isEmpty()) {
+                        businesses.add(currentBusiness);
+                    }
+                    
+                    // Start new business
+                    currentBusiness = new RestaurantData();
+                    currentBusiness.setName(line);
+                    
+                } else if (line.startsWith("⭐ ")) {
+                    // Rating and price
+                    if (currentBusiness != null) {
+                        String[] parts = line.substring(2).split("•");
+                        if (parts.length > 0) {
+                            try {
+                                // Parse rating like "4.5/5" or "4.5"
+                                String ratingStr = parts[0].trim().split("/")[0];
+                                currentBusiness.setRating(Double.parseDouble(ratingStr));
+                            } catch (NumberFormatException e) {
+                                // If parsing fails, just skip rating
+                            }
+                        }
+                        if (parts.length > 1) {
+                            currentBusiness.setPrice(parts[1].trim());
+                        }
+                    }
+                    
+                } else if (line.matches("^[🍽️🎮🎯🎨🏃‍♂️🎭🛍️🏨💊🚗🔧✂️📚] .+")) {
+                    // Category/cuisine (can be various emojis: 🍽️ for restaurants, 🎮 for arcades, etc.)
+                    if (currentBusiness != null) {
+                        // Remove the emoji (first 2 chars including space) and extract category
+                        currentBusiness.setCuisine(line.substring(2).trim());
+                    }
+                    
+                } else if (line.startsWith("📍 ")) {
+                    // Address
+                    if (currentBusiness != null) {
+                        currentBusiness.setAddress(line.substring(2).trim());
+                    }
+                    
+                } else if (line.startsWith("📞 ")) {
+                    // Phone
+                    if (currentBusiness != null) {
+                        currentBusiness.setPhone(line.substring(2).trim());
+                    }
+                    
+                } else if (line.startsWith("🔗 ")) {
+                    // URL
+                    if (currentBusiness != null) {
+                        String url = line.substring(2).trim();
+                        currentBusiness.setUrl(url);
+                        
+                        // Extract restaurant ID from URL
+                        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("yelp\\.com/biz/([^?]+)");
+                        java.util.regex.Matcher matcher = pattern.matcher(url);
+                        if (matcher.find()) {
+                            currentBusiness.setRestaurantId(matcher.group(1));
+                        }
+                    }
+                    
+                } else if (line.contains("http") && currentBusiness != null && currentBusiness.getImageUrl() == null) {
+                    // Image URL
+                    java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(https://s3-media[^\\s]+\\.jpg)");
+                    java.util.regex.Matcher matcher = pattern.matcher(line);
+                    if (matcher.find()) {
+                        currentBusiness.setImageUrl(matcher.group(1));
+                    }
+                }
+            }
+            
+            // Add last business
+            if (currentBusiness != null && currentBusiness.getName() != null && !currentBusiness.getName().isEmpty()) {
+                businesses.add(currentBusiness);
+            }
+            
+            System.out.println("[EXTRACT] Parsed " + businesses.size() + " businesses from formatted response");
+            
+        } catch (Exception e) {
+            System.err.println("[EXTRACT] Error extracting businesses from formatted response: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+        return businesses;
     }
     
     /**
@@ -448,22 +609,31 @@ public class OpenAIService {
             String systemPrompt = """
                 You are a query classifier for a restaurant recommendation bot. Your job is to determine if the user is:
                 
-                1. INFORMATIONAL: Asking a question about previously recommended restaurants (e.g., "does it have vegan options?", 
-                   "what are their hours?", "do they have parking?", "is it wheelchair accessible?")
+                1. INFORMATIONAL: Asking a question about a SPECIFIC previously recommended restaurant
+                   Examples: "does it have vegan options?", "what are their hours?", "do they have parking?", 
+                   "is the Brew City Grill wheelchair accessible?", "does that place take reservations?"
                    
-                2. RECOMMENDATION: Requesting new restaurant recommendations (e.g., "find me a restaurant", "where should I eat?", 
-                   "recommend something", "I want Italian food")
+                2. RECOMMENDATION: Requesting NEW restaurant recommendations OR asking about different places
+                   Examples: "find me a restaurant", "where should I eat?", "I want Italian food", 
+                   "are there any spots with beer?", "I want to drink today", "show me pizza places",
+                   "any good sushi nearby?", "what about Chinese food?"
                 
-                Key indicators for INFORMATIONAL:
-                - Uses pronouns referring to a restaurant: "it", "they", "their", "the place"
-                - Asks about specific attributes: hours, menu items, accessibility, payment methods, parking
-                - References previously mentioned restaurant by name
-                - Question words: "does", "can", "is", "are", "do", "what about"
+                CRITICAL: If the user is asking about "any spots", "any places", "anywhere", "other options",
+                or introducing NEW search criteria (food type, ambiance, activity like "drink", "eat"), 
+                it's ALWAYS a RECOMMENDATION request, NOT informational.
                 
-                Key indicators for RECOMMENDATION:
-                - Uses action verbs: "find", "recommend", "suggest", "look for"
-                - Specifies new criteria: cuisine type, location, price range
-                - No reference to previous restaurants
+                Key indicators for INFORMATIONAL (must have ALL of these):
+                - Uses pronouns referring to ONE specific restaurant: "it", "they", "their", "the place", "that restaurant"
+                - Asks about specific attributes of THAT restaurant: hours, menu items, accessibility, payment methods
+                - Does NOT introduce new search criteria or ask about "any" or "other" places
+                
+                Key indicators for RECOMMENDATION (if ANY of these):
+                - Asks "are there", "any spots", "any places", "anywhere", "other options"
+                - Introduces NEW criteria: food type, cuisine, drinks, ambiance, location, price
+                - Uses action verbs: "find", "recommend", "suggest", "show", "look for", "want"
+                - Mentions activities: "eat", "drink", "dine", "grab food"
+                
+                When in doubt, choose RECOMMENDATION (safer to show options than refuse to help).
                 
                 Respond with ONLY one word: "INFORMATIONAL" or "RECOMMENDATION"
                 """;
@@ -525,6 +695,88 @@ public class OpenAIService {
             System.err.println("[CLASSIFY] Error classifying query: " + e.getMessage());
             return "RECOMMENDATION"; // Default to recommendation on error
         }
+    }
+    
+    /**
+     * Rephrases "activity" queries into business/venue queries that Yelp can understand.
+     * Yelp works better with concrete business types than abstract "activities".
+     * 
+     * @param query The original query
+     * @return Rephrased query focused on businesses/venues
+     */
+    private String rephraseActivityQueryForYelp(String query) {
+        String lowerQuery = query.toLowerCase();
+        
+        // If query mentions "activities" or "things to do", rephrase it
+        if (lowerQuery.contains("activit") || lowerQuery.contains("thing to do") || 
+            lowerQuery.contains("date idea") || lowerQuery.contains("fun")) {
+            
+            // Extract location if present
+            String location = "";
+            if (lowerQuery.contains(" in ") || lowerQuery.contains(" for ")) {
+                // Keep the location context
+                location = query.replaceAll("(?i).*?\\b(in|for)\\s+", "");
+            }
+            
+            // Rephrase to focus on businesses and venues
+            return String.format(
+                "Find fun and interesting venues, entertainment spots, cafes, bars, breweries, dessert shops, " +
+                "arcades, bowling alleys, or unique local businesses perfect for a date or outing%s. " +
+                "Include a mix of dining and non-dining options.",
+                location.isEmpty() ? "" : " in " + location
+            );
+        }
+        
+        return query;
+    }
+    
+    /**
+     * Determines if a query is specifically about restaurants/dining or general businesses.
+     * Restaurant queries should use with_reasoning=true for structured data.
+     * General queries (activities, shops, attractions) should use with_reasoning=false.
+     * 
+     * @param query The user's query
+     * @return true if query is restaurant-focused, false for general businesses
+     */
+    private boolean isRestaurantFocusedQuery(String query) {
+        String lowerQuery = query.toLowerCase();
+        
+        // Keywords that indicate general business/activity queries (NOT restaurant-specific)
+        String[] generalKeywords = {
+            "activit", "attraction", "thing to do", "date idea", "fun", "entertainment",
+            "park", "museum", "shop", "store", "mall", "theater", "cinema", "movie",
+            "bowling", "arcade", "mini golf", "hiking", "beach", "trail"
+        };
+        
+        // Keywords that indicate restaurant/dining queries
+        String[] restaurantKeywords = {
+            "restaurant", "food", "eat", "dining", "lunch", "dinner", "breakfast", "brunch",
+            "cafe", "coffee", "bar", "drink", "cuisine", "meal", "hungry", "menu"
+        };
+        
+        // Check if query contains general business keywords
+        for (String keyword : generalKeywords) {
+            if (lowerQuery.contains(keyword)) {
+                // If it also mentions food/dining, it's still restaurant-focused
+                for (String restKeyword : restaurantKeywords) {
+                    if (lowerQuery.contains(restKeyword)) {
+                        return true;
+                    }
+                }
+                // Pure activity/attraction query
+                return false;
+            }
+        }
+        
+        // Check if query explicitly mentions restaurants/dining
+        for (String keyword : restaurantKeywords) {
+            if (lowerQuery.contains(keyword)) {
+                return true;
+            }
+        }
+        
+        // Default to restaurant query for ambiguous cases
+        return true;
     }
     
     // ============================================================================

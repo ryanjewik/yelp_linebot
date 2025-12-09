@@ -39,9 +39,11 @@ public class Neo4jService {
     /**
      * Record a LIKE relationship between user and restaurant
      */
-    public void recordLike(String userId, String restaurantId, String restaurantName, String cuisine, String priceLevel) {
+    public void recordLike(String userId, String restaurantId, String restaurantName, String cuisine, String priceLevel, String conversationId) {
         String query = """
             MERGE (u:User {userId: $userId})
+            ON CREATE SET u.conversationId = $conversationId
+            ON MATCH SET u.conversationId = $conversationId
             MERGE (r:Restaurant {restaurantId: $restaurantId})
             ON CREATE SET r.name = $name, r.cuisine = $cuisine, r.priceLevel = $priceLevel
             WITH u, r
@@ -58,6 +60,7 @@ public class Neo4jService {
             session.executeWrite(tx -> {
                 Map<String, Object> params = Map.of(
                     "userId", userId,
+                    "conversationId", conversationId,
                     "restaurantId", restaurantId,
                     "name", restaurantName,
                     "cuisine", cuisine != null ? cuisine : "Unknown",
@@ -65,7 +68,7 @@ public class Neo4jService {
                 );
                 return tx.run(query, params).consume();
             });
-            System.out.println("[NEO4J] Recorded LIKE: " + userId + " -> " + restaurantName);
+            System.out.println("[NEO4J] Recorded LIKE: " + userId + " -> " + restaurantName + " (conversation: " + conversationId + ")");
         } catch (Exception e) {
             System.err.println("[NEO4J] Error recording like: " + e.getMessage());
             e.printStackTrace();
@@ -75,9 +78,11 @@ public class Neo4jService {
     /**
      * Record a DISLIKE relationship between user and restaurant
      */
-    public void recordDislike(String userId, String restaurantId, String restaurantName, String cuisine, String priceLevel) {
+    public void recordDislike(String userId, String restaurantId, String restaurantName, String cuisine, String priceLevel, String conversationId) {
         String query = """
             MERGE (u:User {userId: $userId})
+            ON CREATE SET u.conversationId = $conversationId
+            ON MATCH SET u.conversationId = $conversationId
             MERGE (r:Restaurant {restaurantId: $restaurantId})
             ON CREATE SET r.name = $name, r.cuisine = $cuisine, r.priceLevel = $priceLevel
             WITH u, r
@@ -94,6 +99,7 @@ public class Neo4jService {
             session.executeWrite(tx -> {
                 Map<String, Object> params = Map.of(
                     "userId", userId,
+                    "conversationId", conversationId,
                     "restaurantId", restaurantId,
                     "name", restaurantName,
                     "cuisine", cuisine != null ? cuisine : "Unknown",
@@ -101,7 +107,7 @@ public class Neo4jService {
                 );
                 return tx.run(query, params).consume();
             });
-            System.out.println("[NEO4J] Recorded DISLIKE: " + userId + " -> " + restaurantName);
+            System.out.println("[NEO4J] Recorded DISLIKE: " + userId + " -> " + restaurantName + " (conversation: " + conversationId + ")");
         } catch (Exception e) {
             System.err.println("[NEO4J] Error recording dislike: " + e.getMessage());
             e.printStackTrace();
@@ -109,20 +115,23 @@ public class Neo4jService {
     }
     
     /**
-     * Get like/dislike ratio for a restaurant
+     * Get like/dislike ratio for a restaurant within a specific conversation
      */
-    public Map<String, Integer> getRestaurantRatio(String restaurantId) {
+    public Map<String, Integer> getRestaurantRatio(String restaurantId, String conversationId) {
         String query = """
             MATCH (r:Restaurant {restaurantId: $restaurantId})
-            OPTIONAL MATCH (u1:User)-[:LIKES]->(r)
+            OPTIONAL MATCH (u1:User {conversationId: $conversationId})-[:LIKES]->(r)
             WITH r, count(u1) as likes
-            OPTIONAL MATCH (u2:User)-[:DISLIKES]->(r)
+            OPTIONAL MATCH (u2:User {conversationId: $conversationId})-[:DISLIKES]->(r)
             RETURN likes, count(u2) as dislikes
             """;
         
         try (Session session = driver.session(SessionConfig.forDatabase(database))) {
             return session.executeRead(tx -> {
-                Result result = tx.run(query, Map.of("restaurantId", restaurantId));
+                Result result = tx.run(query, Map.of(
+                    "restaurantId", restaurantId,
+                    "conversationId", conversationId
+                ));
                 if (result.hasNext()) {
                     org.neo4j.driver.Record record = result.next();
                     int likes = record.get("likes").asInt(0);

@@ -39,11 +39,27 @@ public class YelpApiService {
      * @return YelpChatResult containing formatted response and chat ID
      */
     public YelpChatResult queryYelpAI(String query, String chatId, Double latitude, Double longitude) {
+        return queryYelpAI(query, chatId, latitude, longitude, true);
+    }
+    
+    /**
+     * Make a request to Yelp Fusion AI Chat API with optional reasoning.
+     * 
+     * @param query Natural language query
+     * @param chatId Optional chat ID for conversation continuity
+     * @param latitude Optional user latitude for location context
+     * @param longitude Optional user longitude for location context
+     * @param withReasoning If true, requests structured restaurant data with reasoning (restaurants only). If false, allows general business queries.
+     * @return YelpChatResult containing formatted response and chat ID
+     */
+    public YelpChatResult queryYelpAI(String query, String chatId, Double latitude, Double longitude, boolean withReasoning) {
         try {
             // Build request body
             ObjectNode requestBody = objectMapper.createObjectNode();
             requestBody.put("query", query);
-            requestBody.put("with_reasoning", true); // Request AI reasoning for recommendations
+            if (withReasoning) {
+                requestBody.put("with_reasoning", true); // Request AI reasoning for restaurant recommendations only
+            }
             
             if (chatId != null && !chatId.isEmpty()) {
                 requestBody.put("chat_id", chatId);
