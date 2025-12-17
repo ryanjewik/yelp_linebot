@@ -104,8 +104,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         .toLowerCase()
         .replace(/[^\w\s]/g, ' ')  // Remove special chars
         .split(/\s+/)
-        .filter((k) => k.length > 2)  // Filter short words
+        .filter((k) => k.length >= 3)  // Keep words with 3+ chars
         .join(' | ');  // OR operator for full-text search
+      
+      console.error(`[CHAT_HISTORY_MCP] Original query: "${query}", Processed: "${searchQuery}"`);
       
       if (!searchQuery) {
         return {
@@ -134,11 +136,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         FROM messages
         WHERE lineconversationid = $1
           AND messagecontent IS NOT NULL
-          AND messagedate >= NOW() - INTERVAL '7 days'
+          AND messagedate >= NOW() - INTERVAL '30 days'
           AND messagecontent NOT LIKE '%Error calling Yelp API%'
           AND messagecontent NOT LIKE '%VALIDATION_ERROR%'
           AND messagecontent NOT LIKE '%Bad Request%'
-          AND messagecontent NOT LIKE 'Here are the %'
+          AND messagecontent NOT LIKE 'Based on our conversation history:%'
           AND to_tsvector('english', messagecontent) @@ to_tsquery('english', $2)
         ORDER BY relevance DESC, messagedate DESC
         LIMIT $3`,
@@ -149,6 +151,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ]
       );
 
+      // If full-text search returns nothing, try a simpler ILIKE search
+      if (result.rows.length === 0) {
+        console.error(`[CHAT_HISTORY_MCP] Full-text search found 0 results, trying ILIKE fallback...`);
+        
+        // Extract key terms from original query
+        const keyTerms = query
+          .toLowerCase()
+          .replace(/[^\w\s]/g, ' ')
+          .split(/\s+/)
+          .filter((k) => k.length >= 4); // Longer words for LIKE search
+        
+        if (keyTerms.length > 0) {
+          const likeConditions = keyTerms.map((_, i) => `messagecontent ILIKE $${i + 3}`).join(' OR ');
+          const likeValues = keyTerms.map(term => `%${term}%`);
+          
+          const fallbackResult = await pool.query<MessageRow>(
+            `SELECT 
+              messageid,
+              userid,
+              messagecontent,
+              messagedate,
+              1.0 as relevance
+            FROM messages
+            WHERE lineconversationid = $1
+              AND messagecontent IS NOT NULL
+              AND messagedate >= NOW() - INTERVAL '30 days'
+              AND messagecontent NOT LIKE '%Error calling Yelp API%'
+              AND messagecontent NOT LIKE '%VALIDATION_ERROR%'
+              AND messagecontent NOT LIKE '%Bad Request%'
+              AND messagecontent NOT LIKE 'Based on our conversation history:%'
+              AND (${likeConditions})
+            ORDER BY messagedate DESC
+            LIMIT $2`,
+            [conversationId, limit * 5, ...likeValues]
+          );
+          
+          console.error(`[CHAT_HISTORY_MCP] ILIKE fallback found ${fallbackResult.rows.length} results`);
+          
+          if (fallbackResult.rows.length > 0) {
+            result.rows = fallbackResult.rows;
+          }
+        }
+      }
+      
       if (result.rows.length === 0) {
         return {
           content: [

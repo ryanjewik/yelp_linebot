@@ -72,6 +72,35 @@ public class OpenAIService {
             if (yelpConversationId != null && !yelpConversationId.isEmpty()) {
                 String queryType = classifyQueryType(userQuery, chatHistory);
                 if ("INFORMATIONAL".equals(queryType)) {
+                    // Check if query references past time periods or recall requests
+                    boolean isCrossSession = userQuery.toLowerCase().matches(".*(yesterday|last week|last time|previous|earlier|before|ago|other day|recall|remember|gave me).*");
+                    
+                    if (isCrossSession) {
+                        System.out.println("[QUERY TYPE] Cross-session informational query - searching chat history");
+                        // Search our database instead of Yelp's session memory
+                        String historicalContext = callChatHistoryMCP(lineConversationId, userQuery);
+                        
+                        if (historicalContext != null && !historicalContext.equals("null")) {
+                            // Parse the historical results and extract business data
+                            List<RestaurantData> historicalBusinesses = parseHistoricalBusinesses(historicalContext);
+                            
+                            if (!historicalBusinesses.isEmpty()) {
+                                // Add to restaurants list so controller sends as Flex Messages
+                                restaurants.addAll(historicalBusinesses);
+                                messages.add("Here are the places I previously recommended:");
+                                photosList.add(new ArrayList<>());
+                            } else {
+                                // No business data found, return raw text
+                                messages.add("Based on our conversation history:\n\n" + historicalContext);
+                                photosList.add(new ArrayList<>());
+                            }
+                        } else {
+                            messages.add("I don't have a record of those recommendations in our recent conversations. Would you like me to search for some now?");
+                            photosList.add(new ArrayList<>());
+                        }
+                        return new YelpResult(messages, photosList, yelpConversationId, restaurants);
+                    }
+                    
                     System.out.println("[QUERY TYPE] Informational question detected - using Yelp conversational mode");
                     // Let Yelp Fusion AI handle the follow-up question conversationally
                     YelpApiService.YelpChatResult yelpResult = yelpApiService.queryYelpAI(
@@ -113,15 +142,25 @@ public class OpenAIService {
             // Step 1: Gather context from DB MCPs using OpenAI (user preferences, specific history)
             ContextResult context = gatherContextWithOpenAI(userQuery, lineConversationId, yelpConversationId);
             
-            // Step 2: Check if this is a recall query with history results
-            if (context.hasHistorySearch() && context.getHistorySearchResult() != null) {
-                // For recall queries, extract and return the found restaurants directly
-                String recallResponse = formatRecallResponse(context.getHistorySearchResult(), userQuery);
-                if (recallResponse != null) {
-                    System.out.println("Answering recall query from chat history (no Yelp call needed)");
-                    messages.add(recallResponse);
-                    photosList.add(new ArrayList<>()); // No photos for recall responses
-                    return new YelpResult(messages, photosList, yelpConversationId);
+            // Step 2: Check if this is a recall query (user asking about PAST recommendations)
+            // Only treat as recall if query references past time or if it's explicitly asking "what did you recommend"
+            boolean isRecallQuery = userQuery.toLowerCase().matches(".*(yesterday|last week|last time|previous|earlier|before|ago|other day|recall|remember|gave me|what were|show me what|told me about).*");
+            
+            if (isRecallQuery && context.hasHistorySearch() && context.getHistorySearchResult() != null) {
+                // For recall queries, parse and return businesses as Flex Messages
+                System.out.println("Answering recall query from chat history (no Yelp call needed)");
+                List<RestaurantData> historicalBusinesses = parseHistoricalBusinesses(context.getHistorySearchResult());
+                
+                if (!historicalBusinesses.isEmpty()) {
+                    // Add to restaurants list so controller sends as Flex Messages
+                    restaurants.addAll(historicalBusinesses);
+                    messages.add("Here are the places I previously recommended:");
+                    photosList.add(new ArrayList<>());
+                    return new YelpResult(messages, photosList, yelpConversationId, restaurants);
+                } else {
+                    // No businesses found in history - fall through to make a new search
+                    System.out.println("[RECALL] No businesses found in history, will make new Yelp search instead");
+                    // Don't return here - let it fall through to normal Yelp search below
                 }
             }
             
@@ -161,9 +200,15 @@ public class OpenAIService {
             // It extracts from entities array which is present in both cases
             if (yelpResult.getRawResponse() != null) {
                 System.out.println("[EXTRACT] Extracting business data from Yelp response...");
+                System.out.println("[EXTRACT] Raw response has 'entities': " + yelpResult.getRawResponse().has("entities"));
                 YelpResponseFormatter formatter = new YelpResponseFormatter();
                 restaurants = formatter.extractRestaurantData(yelpResult.getRawResponse());
                 System.out.println("[EXTRACT] Extracted " + restaurants.size() + " businesses");
+                
+                if (restaurants.isEmpty()) {
+                    System.out.println("[EXTRACT] WARNING: No businesses extracted! Raw response preview: " + 
+                        yelpResult.getRawResponse().toString().substring(0, Math.min(500, yelpResult.getRawResponse().toString().length())));
+                }
                 
                 // Step 5.5: Enhance reasoning with preferences (only for restaurant queries)
                 if (isRestaurantQuery && !restaurants.isEmpty()) {
@@ -1012,7 +1057,7 @@ public class OpenAIService {
         
         try {
             // Start MCP process
-            ProcessBuilder pb = new ProcessBuilder("node", "/app/user-prefs-mcp/index.js");
+            ProcessBuilder pb = new ProcessBuilder("node", "/app/user-prefs-mcp/dist/index.js");
             pb.environment().put("DB_HOST", "linebot-db");
             pb.environment().put("DB_PORT", "5432");
             pb.environment().put("DB_NAME", System.getenv("POSTGRES_DB"));
@@ -1089,7 +1134,7 @@ public class OpenAIService {
         
         try {
             // Start MCP process
-            ProcessBuilder pb = new ProcessBuilder("node", "/app/chat-history-mcp/index.js");
+            ProcessBuilder pb = new ProcessBuilder("node", "/app/chat-history-mcp/dist/index.js");
             pb.environment().put("DB_HOST", "linebot-db");
             pb.environment().put("DB_PORT", "5432");
             pb.environment().put("DB_NAME", System.getenv("POSTGRES_DB"));
@@ -1124,23 +1169,62 @@ public class OpenAIService {
                 writer.flush();
             }
             
-            // Read JSON-RPC response
-            String response;
+            // Read JSON-RPC response (with timeout)
+            String response = null;
+            StringBuilder stderrOutput = new StringBuilder();
+            
+            // Read stderr in separate thread to capture errors
+            Thread stderrThread = new Thread(() -> {
+                try (BufferedReader errReader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+                    String line;
+                    while ((line = errReader.readLine()) != null) {
+                        stderrOutput.append(line).append("\n");
+                    }
+                } catch (IOException e) {
+                    System.err.println("[MCP] Error reading stderr: " + e.getMessage());
+                }
+            });
+            stderrThread.start();
+            
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                response = reader.readLine();
+                // Wait up to 5 seconds for response
+                long startTime = System.currentTimeMillis();
+                while (response == null && (System.currentTimeMillis() - startTime) < 5000) {
+                    if (reader.ready()) {
+                        response = reader.readLine();
+                        break;
+                    }
+                    Thread.sleep(100);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            
+            // Wait for stderr thread to finish
+            stderrThread.join(1000);
+            
+            if (stderrOutput.length() > 0) {
+                System.out.println("[MCP] Stderr output: " + stderrOutput.toString());
             }
             
             System.out.println("[MCP] Received response: " + response);
             
             process.destroy();
             
-            if (response != null) {
-                JsonNode responseNode = objectMapper.readTree(response);
-                JsonNode result = responseNode.path("result");
-                JsonNode content = result.path("content").get(0);
-                String historyJson = content.path("text").asText();
-                System.out.println("[MCP] Chat history retrieved: " + historyJson);
-                return historyJson;
+            if (response != null && !response.trim().isEmpty()) {
+                try {
+                    JsonNode responseNode = objectMapper.readTree(response);
+                    JsonNode result = responseNode.path("result");
+                    JsonNode content = result.path("content").get(0);
+                    String historyJson = content.path("text").asText();
+                    System.out.println("[MCP] Chat history retrieved: " + historyJson);
+                    return historyJson;
+                } catch (Exception parseEx) {
+                    System.err.println("[MCP] Failed to parse MCP response: " + parseEx.getMessage());
+                    System.err.println("[MCP] Raw response was: " + response);
+                }
+            } else {
+                System.err.println("[MCP] No response received from MCP process");
             }
             
         } catch (Exception e) {
@@ -1190,7 +1274,7 @@ public class OpenAIService {
         
         try {
             // Start MCP process
-            ProcessBuilder pb = new ProcessBuilder("node", "/app/conversation-context-mcp/index.js");
+            ProcessBuilder pb = new ProcessBuilder("node", "/app/conversation-context-mcp/dist/index.js");
             pb.environment().put("DB_HOST", "linebot-db");
             pb.environment().put("DB_PORT", "5432");
             pb.environment().put("DB_NAME", System.getenv("POSTGRES_DB"));
@@ -1552,5 +1636,145 @@ public class OpenAIService {
         public void setSummary(String summary) {
             this.summary = summary;
         }
+    }
+    
+    /**
+     * Parse historical business data from chat history MCP response
+     */
+    private List<RestaurantData> parseHistoricalBusinesses(String historicalContext) {
+        List<RestaurantData> businesses = new ArrayList<>();
+        try {
+            JsonNode root = objectMapper.readTree(historicalContext);
+            if (root.has("results") && root.get("results").isArray()) {
+                for (JsonNode result : root.get("results")) {
+                    if (result.has("content") && result.has("role") && 
+                        "assistant".equals(result.get("role").asText())) {
+                        String content = result.get("content").asText();
+                        
+                        // Parse the formatted business text (e.g., "📍 Name\n⭐ Rating...")
+                        RestaurantData business = parseBusinessFromText(content);
+                        if (business != null) {
+                            businesses.add(business);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[HISTORICAL_PARSE] Error parsing historical businesses: " + e.getMessage());
+        }
+        return businesses;
+    }
+    
+    /**
+     * Parse a business from formatted text (e.g., "📍 Name\n⭐ Rating...")
+     */
+    private RestaurantData parseBusinessFromText(String text) {
+        try {
+            // Extract name (after 📍)
+            String name = extractField(text, "📍 ", "\n");
+            if (name == null || name.isEmpty()) {
+                return null;
+            }
+            
+            // Extract rating and price (after ⭐)
+            String ratingLine = extractField(text, "⭐ ", "\n");
+            double rating = 0.0;
+            String price = null;
+            if (ratingLine != null) {
+                String[] parts = ratingLine.split("•");
+                if (parts.length > 0) {
+                    String ratingStr = parts[0].trim().split("/")[0].trim();
+                    try {
+                        rating = Double.parseDouble(ratingStr);
+                    } catch (NumberFormatException ignored) {}
+                }
+                if (parts.length > 1) {
+                    price = parts[1].trim();
+                }
+            }
+            
+            // Extract cuisine (after 🍽️)
+            String cuisine = extractField(text, "🍽️ ", "\n");
+            
+            // Extract address (after second 📍)
+            int secondLocation = text.indexOf("📍", text.indexOf("📍") + 1);
+            String address = null;
+            if (secondLocation >= 0) {
+                address = extractField(text.substring(secondLocation), "📍 ", "\n");
+            }
+            
+            // Extract phone (after 📞)
+            String phone = extractField(text, "📞 ", "\n");
+            
+            // Extract URL (after 🔗)
+            String url = extractField(text, "🔗 ", "\n");
+            if (url != null && url.startsWith("yelp.com/")) {
+                url = "https://" + url;
+            }
+            
+            RestaurantData business = new RestaurantData();
+            business.setName(name);
+            business.setRating(rating);
+            business.setPrice(price);
+            business.setCuisine(cuisine);
+            business.setAddress(address);
+            business.setPhone(phone);
+            business.setUrl(url);
+            
+            return business;
+        } catch (Exception e) {
+            System.err.println("[BUSINESS_PARSE] Error parsing business text: " + e.getMessage());
+            return null;
+        }
+    }
+    
+    /**
+     * Extract a field from text between start and end markers
+     */
+    private String extractField(String text, String start, String end) {
+        int startIdx = text.indexOf(start);
+        if (startIdx < 0) {
+            return null;
+        }
+        startIdx += start.length();
+        int endIdx = text.indexOf(end, startIdx);
+        if (endIdx < 0) {
+            endIdx = text.length();
+        }
+        return text.substring(startIdx, endIdx).trim();
+    }
+    
+    /**
+     * Format a business as text for LINE message
+     */
+    private String formatBusinessAsText(RestaurantData business) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("📍 ").append(business.getName()).append("\n");
+        
+        if (business.getRating() > 0) {
+            sb.append("⭐ ").append(business.getRating()).append("/5");
+            if (business.getPrice() != null && !business.getPrice().isEmpty()) {
+                sb.append(" • ").append(business.getPrice());
+            }
+            sb.append("\n");
+        }
+        
+        if (business.getCuisine() != null && !business.getCuisine().isEmpty()) {
+            sb.append("🍽️ ").append(business.getCuisine()).append("\n");
+        }
+        
+        if (business.getAddress() != null && !business.getAddress().isEmpty()) {
+            sb.append("📍 ").append(business.getAddress()).append("\n");
+        }
+        
+        if (business.getPhone() != null && !business.getPhone().isEmpty()) {
+            sb.append("📞 ").append(business.getPhone()).append("\n");
+        }
+        
+        if (business.getUrl() != null && !business.getUrl().isEmpty()) {
+            sb.append("🔗 ").append(business.getUrl());
+        }
+        
+        return sb.toString().trim();
     }
 }

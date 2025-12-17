@@ -144,12 +144,17 @@ public class LineCallbackController {
                 // Process the actual request
                 LineMessageService.MessageResult result = messageService.handleTextMessage(text, messageId, lineConversationId, userId, msgType, replyId);
                 
+                System.out.println("[CONTROLLER] Result has " + result.getRestaurants().size() + " restaurants");
+                System.out.println("[CONTROLLER] Result has " + result.getReplies().size() + " text messages");
+                
                 // Send the actual results via push message
                 if (!result.getReplies().isEmpty() || !result.getRestaurants().isEmpty()) {
                     // If we have structured restaurant data, send as Flex Messages
                     if (!result.getRestaurants().isEmpty()) {
+                        System.out.println("[CONTROLLER] Sending " + result.getRestaurants().size() + " restaurants as Flex Messages");
                         sendRestaurantsAsFlexMessages(lineConversationId, result.getRestaurants(), result.getReplies(), messageId, lineConversationId, userId, msgType, replyId, result.getYelpConversationId());
                     } else {
+                        System.out.println("[CONTROLLER] Sending " + result.getReplies().size() + " text messages (no restaurants)");
                         // Fallback to text messages for non-restaurant responses
                         sendPushMessage(lineConversationId, result.getReplies(), result.getPhotos(), messageId, lineConversationId, userId, msgType, replyId, result.getYelpConversationId());
                     }
